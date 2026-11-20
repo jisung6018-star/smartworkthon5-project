@@ -19,8 +19,15 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from . import llm
 
-FONT_BOLD = "C:/Windows/Fonts/malgunbd.ttf"
-FONT_REG = "C:/Windows/Fonts/malgun.ttf"
+def _first_font(*paths: str) -> str:
+    return next((p for p in paths if Path(p).exists()), paths[0])
+
+
+# Windows 는 맑은 고딕, Linux(배포 서버)는 나눔고딕(fonts-nanum)
+FONT_BOLD = _first_font("C:/Windows/Fonts/malgunbd.ttf", "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+                        "/usr/share/fonts/truetype/nanum/NanumBarunGothicBold.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc")
+FONT_REG = _first_font("C:/Windows/Fonts/malgun.ttf", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+                       "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc")
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 FORMATS = {"정사각 1080x1080": (1080, 1080), "세로 1080x1350": (1080, 1350),
            "스토리 1080x1920": (1080, 1920), "가로 1200x628": (1200, 628)}

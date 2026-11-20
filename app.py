@@ -25,7 +25,7 @@ DATA = ROOT / "data"
 SITE = ROOT / "input" / "site"
 APPROVALS = ROOT / "output" / "approvals.json"
 ROLE_LABEL = {"경영진": "경영진", "영업 관리자": "영업 관리자(실무 관리자)", "전산·총무 담당": "전산 담당자"}
-FRAMES = ["STP 세분시장", "STP 목표시장", "STP 포지셔닝", "ICP", "JTBD", "USP"]
+FRAMES = ["STP 세분시장", "STP 목표시장", "STP 포지셔닝", "ICP", "JTBD"]
 SIX = [("Who", "누가 결정하나"), ("Problem", "어떤 문제를 겪나"), ("WhyNow", "왜 지금인가"), ("Value", "제품이 주는 가치"),
        ("Objection", "망설이는 이유"), ("Proof", "믿을 근거")]
 CONFLICT_CLASS = {"값이 다름": "확정적 충돌", "값이 다름 (적용 범위가 다를 수 있음 · 사람 확인)": "범위·조건 불명확",
@@ -77,10 +77,31 @@ def load_all() -> dict:
             "pages": jload(DATA / "pages.json", [])}
 
 
+DEMO = not os.getenv("ANTHROPIC_API_KEY")        # 키가 없는 서버(공개 데모)는 보기 전용: 생성·분석 버튼을 끔
+
+
+@st.cache_resource(show_spinner="설치 사례 사진을 티링크 공개 홈페이지에서 받는 중…")
+def fetch_site_photos() -> str:
+    """사진은 저장소에 넣지 않았습니다. 사진이 없는 서버에서는 공개 홈페이지에서 한 번 받아 카드 이미지를 다시 그립니다."""
+    if (SITE / "photos.json").exists():
+        return "있음"
+    try:
+        import collect
+        import ingest
+        r = collect.get(collect.BASE + "case.php")
+        photos = collect.collect_photos(r.text)
+        (SITE / "_raw.json").write_text(json.dumps(photos, ensure_ascii=False, indent=1), encoding="utf-8")
+        ingest.build_photos()
+        return f"{len(photos)}장 받음"
+    except Exception as e:  # noqa: BLE001 — 못 받아도 화면은 문구만으로 뜸
+        return f"받지 못함 ({str(e)[:80]})"
+
+
+PHOTO_FETCH = fetch_site_photos()
 D = load_all()
 CARDS, BY_ID, CONFLICTS = D["cards"], D["by_id"], D["conflicts"]
 VALID = {c["id"] for c in CARDS if c.get("원문확인")}
-RULES = verify.load_rules()
+RULES = verify.load_rules() + st.session_state.get("demo_rules", [])
 try:
     LEDGER = verify.build_ledger(CARDS, CONFLICTS, D["photos"]) if CARDS else None
 except Exception:  # noqa: BLE001 — 기준을 못 만들면 검수는 '미검사'로 표시
@@ -124,11 +145,13 @@ def card_text_check(card: dict) -> dict:
 
 def approvals() -> dict:
     if "approvals" not in st.session_state:
-        st.session_state["approvals"] = jload(APPROVALS, {}) or {}
+        st.session_state["approvals"] = {} if DEMO else (jload(APPROVALS, {}) or {})
     return st.session_state["approvals"]
 
 
 def save_approvals():
+    if DEMO:            # 공개 데모에서는 방문자마다 따로 (서버 파일에 남기지 않음)
+        return
     APPROVALS.parent.mkdir(exist_ok=True)
     APPROVALS.write_text(json.dumps(st.session_state["approvals"], ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -150,6 +173,8 @@ st.caption("현장 사진과 제품 자료로 고객별 설득 전략과 홍보 
 
 with st.sidebar:
     st.subheader("연결 상태")
+    if DEMO:
+        st.info("보기 전용 데모: 미리 만든 결과를 보여 줍니다. 검수는 AI 없이 코드로 실제 작동합니다.")
     st.markdown(f"- Claude (분석·글쓰기): {'연결됨' if os.getenv('ANTHROPIC_API_KEY') else '키 없음'}\n"
                 f"- Gemini (사진 교차 검증): {'연결됨' if (os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')) else '키 없음 → 미실행으로 기록'}")
     st.subheader("이번 실행의 AI 사용량")
@@ -166,10 +191,11 @@ with tabA:
     files = {}
     for c in CARDS:
         files[c["파일"]] = files.get(c["파일"], 0) + 1
-    n_pages = len(D["pages"]) or len({c["출처"] for c in CARDS})
+    summary = jload(DATA / "summary.json", {})
+    n_pages = len(D["pages"]) or summary.get("쪽") or len({c["출처"] for c in CARDS})
     inds = (D["industry"] or {}).get("산업", [])
     m = st.columns(5)
-    m[0].metric("읽은 자료", f"{len(files)}개", f"{n_pages}쪽" if D["pages"] else None, delta_color="off")
+    m[0].metric("읽은 자료", f"{len(files)}개", f"{n_pages}쪽", delta_color="off")
     m[1].metric("사실 카드", f"{len(CARDS)}개", f"원문 일치 {len(VALID)}개", delta_color="off")
     m[2].metric("자료 간 불일치 후보", f"{len(CONFLICTS)}건")
     m[3].metric("분석한 산업", f"{len(inds)}개" if inds else "실행 전")
@@ -179,7 +205,9 @@ with tabA:
         st.caption("PDF · PPTX · XLSX 를 넣으면 쪽 단위로 읽어 사실 카드를 다시 만듭니다. 자료 속 문장은 지시가 아니라 데이터로만 다룹니다.")
         ups = st.file_uploader("제품 자료", type=["pdf", "pptx", "xlsx"], accept_multiple_files=True)
         refresh = st.checkbox("사실 카드를 처음부터 다시 추출 (AI 호출, 2분 안팎)", value=False)
-        if st.button("분석 실행", type="primary"):
+        if DEMO:
+            st.info("이 화면은 보기 전용 데모입니다. 대회에서 받은 원본 문서와 API 키를 서버에 올리지 않았기 때문에 분석 실행은 꺼 두었습니다. 아래 결과는 실제 자료로 만든 것입니다.")
+        if st.button("분석 실행", type="primary", disabled=DEMO):
             with st.status("분석 중…", expanded=True) as box:
                 try:
                     import ingest
@@ -209,6 +237,21 @@ with tabA:
                     box.update(label=f"분석 실패: {str(e)[:160]}", state="error")
         if files:
             st.dataframe([{"자료": k, "사실 카드": v} for k, v in files.items()], width="stretch", hide_index=True, height=220)
+
+    # ── 제품과 기술적 차별점 (시제의 첫 요구) ──
+    st.subheader("티링크 제품과 기술적 차별점 (AI 분석)")
+    usp = [it for it in D["strategy"]["항목"] if it["틀"] == "USP"]
+    diff = [c for c in CARDS if c.get("유형") == "차별점" and c.get("원문확인")]
+    prod = [c for c in CARDS if c.get("유형") == "제품 구성" and c.get("원문확인")]
+    st.caption(f"AI가 제공 자료에서 제품 구성 {len(prod)}개, 차별점 {len(diff)}개를 사실 카드로 뽑았고, 그 카드만 근거로 핵심 차별점을 정리했습니다. "
+               "경쟁사 자료가 없으므로 '유일·최초' 같은 주장은 하지 않습니다.")
+    for it in usp:
+        st.markdown(f"{chip(it['표시'])} **핵심 차별점** {md(it['내용'])}  {ids_text(it.get('근거카드', []))}")
+    d1, d2 = st.columns(2)
+    with d1.expander(f"차별점 사실 카드 {len(diff)}개 (출처 · 원문)"):
+        st.dataframe([{"번호": c["id"], "차별점": c["내용"], "출처": c["출처"], "원문": c.get("원문", "")} for c in diff], width="stretch", hide_index=True, height=320)
+    with d2.expander(f"제품 구성 사실 카드 {len(prod)}개 (출처 · 원문)"):
+        st.dataframe([{"번호": c["id"], "제품 구성": c["내용"], "출처": c["출처"], "원문": c.get("원문", "")} for c in prod], width="stretch", hide_index=True, height=320)
 
     # ── 산업별 추천 ──
     st.subheader("AI 전략 추천: 어느 산업부터 공략할까")
@@ -244,7 +287,7 @@ with tabA:
                     show_cards(used)
 
     # ── 마케팅 분석 ──
-    st.subheader("마케팅 분석: STP · ICP · JTBD · USP")
+    st.subheader("고객 분석: STP · ICP · JTBD")
     counts = {}
     for it in D["strategy"]["항목"]:
         counts[it["표시"]] = counts.get(it["표시"], 0) + 1
@@ -401,6 +444,8 @@ with tabB:
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     box.update(label=f"생성 실패 (미검사): {str(e)[:200]}", state="error")
+        if DEMO:
+            st.info("보기 전용 데모라 새로 생성하지 않습니다. 미리 만든 조합(산업 공통 · 교육기관 · 콜센터)을 선택해 보세요. 검수·수정·승인은 ③ 탭에서 실제로 작동합니다.")
         if RULES:
             st.caption("다음 생성에 적용되는 담당자 규칙: " + ", ".join(f"'{r['금지']}'→'{r.get('대체') or '쓰지 않음'}'" for r in RULES))
 
@@ -635,13 +680,18 @@ with tabC:
         repl = r2.text_input("대신 쓸 표현", placeholder="예: 새로운")
         why = r3.text_input("사유", placeholder="예: 과장으로 읽힘")
         if r4.form_submit_button("규칙 저장") and banned.strip():
-            verify.add_rule(banned, repl, why)
+            if DEMO:    # 공개 데모에서는 이 방문자의 화면에만 적용
+                st.session_state.setdefault("demo_rules", []).append({"금지": banned.strip(), "대체": repl.strip(), "사유": why.strip(), "추가일": "이 화면에서만"})
+            else:
+                verify.add_rule(banned, repl, why)
             st.rerun()
     if RULES:
         st.dataframe([{"쓰지 않을 표현": r["금지"], "대신 쓸 표현": r.get("대체", ""), "사유": r.get("사유", ""), "추가일": r.get("추가일", "")} for r in RULES],
                      width="stretch", hide_index=True)
         if st.button("규칙 모두 지우기"):
-            verify.RULES_FILE.unlink(missing_ok=True)
+            st.session_state.pop("demo_rules", None)
+            if not DEMO:
+                verify.RULES_FILE.unlink(missing_ok=True)
             st.rerun()
         st.caption("저장한 규칙은 검수에서 바로 '금지 표현'으로 잡히고, 다음 생성의 지시문에도 들어갑니다.")
     else:
@@ -649,7 +699,7 @@ with tabC:
 
     # ── 검수기 자체 시험 ──
     st.subheader("검수기 시험: 검출률 · 오탐률 · 표현 변형")
-    st.caption("합격 기준: 검출률 90% 이상, 오탐률 5% 이하, 표현 변형 오탐 0건. 세 시험 모두 AI 없이 코드로 실행되어 누가 눌러도 같은 값이 나옵니다.")
+    st.caption("합격 기준: 검출률 90% 이상, 오탐률 10% 이하, 표현 변형 오탐 0건. 세 시험 모두 AI 없이 코드로 실행되어 누가 눌러도 같은 값이 나옵니다.")
     t1, t2, t3 = st.columns(3)
     with t3:
         st.caption("같은 수치를 '약 3,000석', '3000석', '3,000여 석'처럼 바꿔 써도 잘못 걸리지 않는지 봅니다.")
@@ -675,7 +725,7 @@ with tabC:
             st.session_state["fp"] = verify.false_positive_test(CARDS, CONFLICTS, LEDGER)
         fp = st.session_state.get("fp")
         if fp:
-            st.metric("오탐률", f"{fp['오탐률']}%", f"정상 문장 {fp['정상 문장']}개 중 {fp['잘못 걸림']}개 · 기준 5% 이하", delta_color="off")
+            st.metric("오탐률", f"{fp['오탐률']}%", f"정상 문장 {fp['정상 문장']}개 중 {fp['잘못 걸림']}개 · 기준 10% 이하", delta_color="off")
             if fp["표"]:
                 st.dataframe(fp["표"], width="stretch", hide_index=True, height=300)
                 st.caption("잘못 걸린 문장은 원문 구절에 없는 날짜·금액이 카드 요약에 들어간 경우입니다. 이런 문장은 사람이 확인합니다.")

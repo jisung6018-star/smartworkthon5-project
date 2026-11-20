@@ -39,6 +39,14 @@ def _n(s) -> str:
     return re.sub(r"\s+", "", s or "")
 
 
+THOUSAND = re.compile(r"(\d+)\s*천\s*(여\s*)?(?=석|개|곳|명|원|건)")
+
+
+def _thousand(text: str) -> str:
+    """'3천 석', '1천여 곳'을 숫자 표기(3000석, 1000여 곳)로 바꿔 같은 값으로 비교합니다."""
+    return THOUSAND.sub(lambda m: str(int(m.group(1)) * 1000) + (m.group(2) or ""), text)
+
+
 # ───────────────────────── 기준 만들기 ─────────────────────────
 def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -> dict:
     allowed, examples, quals, quoted = {}, {}, {}, {}
@@ -166,7 +174,7 @@ def check(title: str, body: str, ledger: dict, rules: list[dict] | None = None, 
         if not re.search(r"광고|경제적\s*이해관계|제공받아", body):
             add("광고 표기", "(하단)", "광고임을 밝히는 문구가 없음", 10)
     for s in _sentences(full):
-        plain = STRIP.sub(" ", s)
+        plain = _thousand(STRIP.sub(" ", s))
         for m in NUMBER.finditer(plain):
             raw, unit = m.group(1), (m.group(2) or "").replace(" ", "")
             try:
@@ -296,7 +304,7 @@ def units(body: str) -> list[dict]:
 def _numbers(text: str) -> list[tuple[float, str, str]]:
     """문장에서 검사 대상 숫자 (값, 단위, 원래 표기). '3가지' 같은 작은 개수는 뺍니다."""
     out = []
-    for m in NUMBER.finditer(STRIP.sub(" ", text)):
+    for m in NUMBER.finditer(_thousand(STRIP.sub(" ", text))):
         unit = (m.group(2) or "").replace(" ", "")
         try:
             num = round(float(m.group(1).replace(",", "")), 2)
@@ -351,6 +359,8 @@ def variant_test(cards: list[dict], conflicts: list[dict], ledger: dict) -> dict
             seen.add((num, unit))
             n = int(num)
             forms = [f"{n:,}{unit}", f"{n}{unit}", f"약 {n:,}{unit}", f"{n:,}여 {unit}", f"{n:,} {unit} 이상", f"{n:,}{unit} 규모"]
+            if n >= 1000 and n % 1000 == 0:
+                forms.append(f"{n // 1000}천 {unit}")
             for f in forms:
                 total += 1
                 r = check("", f"구축 사례는 {f}입니다.", ledger, None, doc_level=False)
