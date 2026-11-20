@@ -181,7 +181,7 @@ def missions(title: str, body: str) -> list[dict]:
 def _sentences(body: str) -> list[str]:
     out = []
     for line in body.splitlines():
-        out += [s.strip() for s in re.split(r"(?<=[.!?다요])\s+(?=[가-힣A-Z\[\"'])", line) if s.strip()]
+        out += [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[가-힣A-Za-z0-9\[\"'(])", line) if s.strip()]
     return out
 
 

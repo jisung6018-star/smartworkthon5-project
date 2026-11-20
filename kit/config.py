@@ -9,7 +9,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "output"
 SAMPLES = ROOT / "samples"
-OUT.mkdir(exist_ok=True)
+try:
+    OUT.mkdir(exist_ok=True)
+except OSError:      # 읽기 전용 파일 시스템(서버리스 배포 등)에서는 임시 폴더를 씁니다
+    import tempfile
+
+    OUT = Path(tempfile.gettempdir()) / "factmarketer_output"
+    OUT.mkdir(parents=True, exist_ok=True)
 
 try:
     from dotenv import load_dotenv

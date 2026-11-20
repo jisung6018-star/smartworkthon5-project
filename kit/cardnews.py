@@ -531,3 +531,26 @@ def render_sets(photo, sets: dict[str, list[dict]], out_dir, meta: dict | None =
         return results
     except Exception as e:  # noqa: BLE001
         return {role: _fallback(photo, cards, role, out_dir, f"{type(e).__name__}: {e}") for role, cards in sets.items()}
+
+
+def pages_html(cards: list[dict], role: str, photo_url: str, photo_size: tuple[int, int] = (1200, 900), meta: dict | None = None,
+               cards_by_id: dict | None = None, market_mark: str = "", brand: str = "티링크 비즈레코딩", font_url: str | None = None,
+               **kwargs) -> list[str]:
+    """브라우저가 직접 그릴 카드 HTML 을 쪽마다 돌려줍니다 (각각 완성된 1080×1350 문서).
+    서버에 Chrome 이 없는 곳(Vercel 등)에서 화면이 iframe 으로 보여 주는 용도입니다. photo_url·font_url 은 웹 주소이고,
+    문서가 열리면 글자 맞춤(__fit)을 스스로 실행합니다. 그 밖의 인자(**kwargs)는 page_html 로 그대로 넘깁니다."""
+    total = len(cards)
+    auto = ("<script>(document.fonts&&document.fonts.ready?document.fonts.ready:Promise.resolve())"
+            ".then(function(){if(window.__fit)window.__fit();});</script></body>")
+    out = []
+    for i, card in enumerate(cards, 1):
+        page_no = min(i, 4) if total >= 4 or i < total else 4       # 마지막 장은 항상 제안 틀
+        doc = page_html(page_no, total, card, role, brand, photo_url, photo_size, meta, cards_by_id, market_mark, **kwargs)
+        if font_url:
+            if FONT.exists():
+                doc = doc.replace(FONT.resolve().as_uri(), font_url)
+            else:
+                face = f"@font-face{{font-family:'Pretendard';src:url('{font_url}') format('woff2');font-weight:100 900;font-display:block}}"
+                doc = doc.replace("<style>", "<style>" + face, 1)
+        out.append(doc.replace("</body>", auto, 1))
+    return out

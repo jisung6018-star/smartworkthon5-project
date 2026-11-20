@@ -415,7 +415,7 @@ with tabA:
     st.markdown("### 누가 구매를 결정하나")
     cols = st.columns(3)
     for col, d in zip(cols, D["strategy"]["결정자"]):
-        pts = "".join(f"<li>{esc(p.split(',')[0][:60])}</li>" for p in d.get("설득포인트", [])[:3])
+        pts = "".join(f"<li>{esc(p.split(', ')[0][:70])}</li>" for p in d.get("설득포인트", [])[:3])
         with col:
             st.markdown(f'''<div class="fm-card"><h5>{esc(ROLE_LABEL.get(d["역할"], d["역할"]))}</h5>
               <p><b>관심</b> {esc(d.get("관심사"))}</p><p><b>걱정</b> {esc(d.get("걱정"))}</p><ul>{pts}</ul></div>''', unsafe_allow_html=True)
