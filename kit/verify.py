@@ -80,10 +80,15 @@ def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -
         if x["종류"] == "값이 다름" or not total_vs_subset:     # '전체 수치 대 일부 범위 수치'는 충돌로 보지 않음
             confirm.append({"항목": x["항목"], "숫자": sorted({n for n, _ in entries}), "문맥": KEY_CONTEXT.get(x["항목"], [])})
     masked = sorted({p["가린고객명"] for p in photos if p.get("가린고객명")})
+    limits = []       # 자료에 '○○은 사용할 수 없다'고 적힌 대상 → 되는 것처럼 쓰면 차단
+    for c in cards:
+        m = LIMIT.search(c.get("내용", "")) if c.get("원문확인") else None
+        if m:
+            limits.append({"대상": m.group(1), "카드": c["id"], "출처": c["출처"]})
     # 자료에 실제로 나오는 말 (자료에 공개된 구축 사례 이름은 써도 되고, 자료에 없는 이름은 고객명 후보로 봄)
     corpus = _n(" ".join(f"{c.get('내용', '')} {c.get('원문', '')}" for c in cards if c.get("원문확인"))
                 + " ".join(f"{p.get('업종', '')} {p.get('홈페이지설명', '')}" for p in photos) + COMMON_WORDS)
-    return {"허용숫자": allowed, "예시숫자": examples, "조건": quals, "확인필요": confirm, "가린고객명": masked, "자료어휘": corpus, "원문숫자": quoted}
+    return {"허용숫자": allowed, "예시숫자": examples, "조건": quals, "확인필요": confirm, "가린고객명": masked, "자료어휘": corpus, "원문숫자": quoted, "제약": limits}
 
 
 def load_rules() -> list[dict]:
@@ -189,6 +194,9 @@ def check(title: str, body: str, ledger: dict, rules: list[dict] | None = None, 
             add("과장 표현", s, f"'{EXAGGERATION.search(s).group()}'", 6)
         if PERSONAL.search(s):
             add("개인 연락처", s, "대표번호·공식 메일이 아닌 연락처", 10)
+        for lim in ledger.get("제약", []):
+            if lim["대상"] in s and CLAIM_YES.search(s) and not CLAIM_NO.search(s):
+                add("제약 위반", s, f"자료에는 '{lim['대상']}'은(는) 사용할 수 없다고 적혀 있음 ({lim['카드']} {lim['출처']})", 8)
         for r in rules or []:
             if r["금지"] and r["금지"] in s:
                 add("금지 표현", s, f"담당자가 금지한 '{r['금지']}'" + (f" → '{r['대체']}'" if r.get("대체") else ""), 5)
@@ -202,6 +210,9 @@ def check(title: str, body: str, ledger: dict, rules: list[dict] | None = None, 
             "통과": score >= 90 and not blocks, "문제": issues, "미션": ms}
 
 
+LIMIT = re.compile(r"([가-힣A-Za-z0-9]{2,12})(?:은|는|에서는)\s*(?:사용할 수 없|지원하지 않|지원되지 않|이용할 수 없|사용이 불가)")
+CLAIM_YES = re.compile(r"지원|가능|사용할 수 있|됩니다|녹음|녹취|호환")
+CLAIM_NO = re.compile(r"없|불가|않|미지원|제외|안 됩|안됩")
 BLOCK_AT = 8      # 감점 8 이상(수치·조건·고객명·개인 연락처·광고 표기)은 고치기 전에는 승인할 수 없음
 
 
@@ -282,7 +293,75 @@ def units(body: str) -> list[dict]:
     return out
 
 
-def review(title: str, body: str, original: list[dict], ledger: dict | None, rules: list[dict] | None, valid_cards: set[str]) -> dict:
+def _numbers(text: str) -> list[tuple[float, str, str]]:
+    """문장에서 검사 대상 숫자 (값, 단위, 원래 표기). '3가지' 같은 작은 개수는 뺍니다."""
+    out = []
+    for m in NUMBER.finditer(STRIP.sub(" ", text)):
+        unit = (m.group(2) or "").replace(" ", "")
+        try:
+            num = round(float(m.group(1).replace(",", "")), 2)
+        except ValueError:
+            continue
+        if num < 13 and unit not in MONEY_UNITS:
+            continue
+        out.append((round(num * 1e4, 2) if unit.startswith("만") else round(num * 1e8, 2) if unit.startswith("억") else num, unit, m.group(0).strip()))
+    return out
+
+
+def citation_check(sentences: list[dict], cards_by_id: dict) -> dict:
+    """출처 연결 확인: 문장에 쓴 수치가 그 문장이 인용한 사실 카드 안에 실제로 있는지 봅니다.
+    없으면 그 문장을 '검토 필요'로 내립니다 (수치는 자료에 있지만 엉뚱한 카드를 근거로 댄 경우)."""
+    total = hit = 0
+    for s in sentences:
+        if not s.get("근거카드"):
+            continue
+        pool = set()
+        for cid in s["근거카드"]:
+            c = cards_by_id.get(cid) or {}
+            pool |= {round(float(v["숫자"]), 2) for v in (c.get("수치") or []) if v.get("숫자") is not None}
+            pool |= {n for n, _, _ in _numbers(f"{c.get('원문', '')} {c.get('내용', '')}")}
+            pool |= {round(float(m.group(1).replace(",", "")), 2) for m in NUMBER.finditer(f"{c.get('원문', '')} {c.get('내용', '')}")}
+        for num, unit, raw in _numbers(s["글"]):
+            total += 1
+            plain = round(num / 1e4, 2) if unit.startswith("만") else round(num / 1e8, 2) if unit.startswith("억") else num
+            if num in pool or plain in pool:
+                hit += 1
+            else:
+                s["문제"] = [*s.get("문제", []), f"인용한 사실 카드에 '{raw}'가 없음 (다른 카드의 수치일 수 있음)"]
+                if s["상태"] == "통과":
+                    s["상태"] = "검토 필요"
+    return {"수치": total, "카드에 있음": hit}
+
+
+def variant_test(cards: list[dict], conflicts: list[dict], ledger: dict) -> dict:
+    """표현 변형 시험: 같은 수치를 '약 200개', '200여 개', '200 개 이상'처럼 바꿔 써도 잘못 걸리지 않는지 봅니다."""
+    in_conflict = {cid for x in conflicts for cid in x["카드"]}
+    seen, rows, total = set(), [], 0
+    for c in cards:
+        if not c.get("원문확인") or c["id"] in in_conflict or c.get("유형") == "화면 예시 값":
+            continue
+        for v in c.get("수치") or []:
+            m = NUMBER.search(str(v.get("값") or ""))
+            if not m or v.get("숫자") is None:
+                continue
+            unit = (m.group(2) or "").replace(" ", "")
+            num = float(m.group(1).replace(",", ""))
+            if unit not in ("석", "개", "곳", "명", "원", "건", "USER") or num < 13 or num != int(num) or (num, unit) in seen:
+                continue
+            seen.add((num, unit))
+            n = int(num)
+            forms = [f"{n:,}{unit}", f"{n}{unit}", f"약 {n:,}{unit}", f"{n:,}여 {unit}", f"{n:,} {unit} 이상", f"{n:,}{unit} 규모"]
+            for f in forms:
+                total += 1
+                r = check("", f"구축 사례는 {f}입니다.", ledger, None, doc_level=False)
+                bad = [i for i in r["문제"] if i["종류"] in ("근거 없는 수치", "예시 값 사용")]
+                if bad:
+                    rows.append({"카드": c["id"], "자료 표기": v.get("값"), "바꿔 쓴 표현": f, "잘못 걸린 이유": bad[0]["설명"]})
+    return {"수치": len(seen), "변형 문장": total, "잘못 걸림": len(rows), "표": rows}
+
+
+def review(title: str, body: str, original: list[dict], ledger: dict | None, rules: list[dict] | None, valid_cards: set[str],
+           cards_by_id: dict | None = None) -> dict:
     """화면의 재검증: 지금 원고(담당자가 고쳤을 수 있음)를 검사하고 문장마다 표시·상태·근거 카드를 붙입니다.
     AI 가 쓴 문장과 글자가 같으면 그 문장의 근거 카드를 이어받고, 담당자가 고치거나 새로 쓴 문장은 근거 없는 문장으로 봅니다.
     기준(ledger)이 없거나 검사가 실패하면 모든 문장이 '미검사'입니다."""
@@ -299,6 +378,7 @@ def review(title: str, body: str, original: list[dict], ledger: dict | None, rul
     labeled = label_sentences(sentences, result, valid_cards)
     for s in labeled:
         s["수정됨"] = s["글"] not in by_text
+    result["수치인용"] = citation_check(labeled, cards_by_id) if cards_by_id else None
     n = len(labeled) or 1
     result["문장통계"] = {k: sum(1 for s in labeled if s["상태"] == k) for k in STATES}
     result["통과율"] = round(100 * result["문장통계"]["통과"] / n)
@@ -339,6 +419,10 @@ def injection_test(title: str, body: str, ledger: dict, rules: list[dict] | None
         ("필수 키워드 삭제 (제목)", "필수 키워드", title.replace("업무자동화", "").replace("통화요약", ""), body),
         ("지어낸 사용 후기", "미션", title, body.replace("[직접 사용 후 작성", "직접 써 보니 정말 편했습니다. [삭제됨") if "[직접 사용 후 작성" in body else body + "\n직접 써 보니 정말 편했습니다."),
         ("하단 상담 번호 삭제", "하단 정보", title, body.replace("1877-3836", "")),
+    ]
+    if ledger.get("제약"):
+        muts.append(("자료에서 안 된다고 한 것을 된다고 씀", "제약 위반", title, body + f"\n{ledger['제약'][0]['대상']} 통화도 자동으로 녹음됩니다."))
+    muts += [
     ]
     rows = []
     for name, expect, t, b in muts:

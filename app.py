@@ -424,7 +424,9 @@ with tabB:
                         else:
                             st.markdown(f"**{md(card.get('제목'))}**  \n" + "  \n".join(md(b) for b in card.get("본문", [])))
                         ck = card_text_check(card)
+                        ratio = (r.get("이미지") or [{}] * 4)[i].get("대비") if i < len(r.get("이미지") or []) else None
                         st.markdown(f"{chip(ck['상태'])} {ids_text(card.get('근거카드', []))}"
+                                    + (f"  \n글자 대비 {ratio}:1 (기준 4.5:1 이상)" if ratio else "")
                                     + (f"  \n가치: {md(card['가치'])}" if card.get("가치") else "")
                                     + "".join(f"  \n⚠️ {md(x['설명'])}" for x in ck.get("문제", [])))
         if "블로그" in kinds_pick and shown:
@@ -474,7 +476,7 @@ with tabC:
         st.session_state[tkey], st.session_state[bkey] = title, body
 
     title, body = st.session_state[tk], st.session_state[bk]
-    rv = verify.review(title, body, blog["문장"], LEDGER, RULES, VALID)
+    rv = verify.review(title, body, blog["문장"], LEDGER, RULES, VALID, BY_ID)
     chk, sents = rv["검수"], rv["문장"]
     edited = digest(title, body) != digest(blog["제목"], blog["본문"])
 
@@ -491,8 +493,23 @@ with tabC:
     else:
         top[0].markdown(f"### {ICON['미검사']} 미검사")
         st.error(f"검사를 실행하지 못했습니다: {rv['오류']}. 미검사 상태에서는 승인할 수 없습니다.")
-    st.caption("검수는 AI를 쓰지 않고 코드가 합니다. 같은 원고에는 항상 같은 결과가 나옵니다. 통과는 '자료와 어긋나지 않음'을 뜻하며, 자료 자체가 맞는지는 사람이 확인합니다."
+    cite = (chk or {}).get("수치인용")
+    st.caption((f"출처 연결: 이 원고에 쓴 수치 {cite['수치']}개 중 {cite['카드에 있음']}개가 그 문장이 인용한 사실 카드 안에 있습니다. " if cite else "")
+               + "검수는 AI를 쓰지 않고 코드가 합니다. 같은 원고에는 항상 같은 결과가 나옵니다. 통과는 '자료와 어긋나지 않음'을 뜻하며, 자료 자체가 맞는지는 사람이 확인합니다."
                + ("  ✏️ 담당자가 원고를 수정한 상태입니다." if edited else ""))
+
+    with st.expander("누가 무엇을 판정하나 (코드 · AI · 사람의 경계)"):
+        st.markdown(
+            "| 판정 | 맡는 쪽 | 방법 |\n|---|---|---|\n"
+            "| 숫자가 자료에 있는가 | **코드** | 숫자와 단위를 정규화해 사실 카드·원문 구절과 대조 ('약 200개', '200여 개', '30만원' 모두 같은 값으로 봄) |\n"
+            "| 조건(한정어)이 빠졌는가 | **코드** | 자료 한쪽에만 조건이 붙은 수치(예: 99%와 '인터넷 전화')는 그 조건 단어가 같은 문장에 있어야 통과 |\n"
+            "| 자료마다 값이 다른 수치 | **코드** | [확인 필요] 표시 없이 쓰면 차단 |\n"
+            "| 자료에서 안 된다고 한 기능 | **코드** | 자료에 '사용할 수 없다'고 적힌 대상을 되는 것처럼 쓰면 차단 |\n"
+            "| 고객명, 개인 연락처, 과장 표현, 미션 11개 | **코드** | 가린 이름 목록·정해진 규칙과 대조 |\n"
+            "| 수치의 출처 연결 | **코드** | 문장에 쓴 수치가 그 문장이 인용한 사실 카드 안에 있는지 확인 |\n"
+            "| 숫자가 아닌 조건이 서로 어긋나는가 | **AI → 사람** | AI는 후보만 내고 '추가 확인 필요'로 표시. 확정은 사람 |\n"
+            "| 근거 카드 없이 쓴 문장이 사실처럼 읽히는가 | **사람** | '검토 필요'로 넘기고 확인 기록을 남김 |\n"
+            "| 자료 자체가 맞는가, 최종 게시 | **사람** | 차단이 0건일 때만 승인 가능 |")
 
     # ── 왼쪽 문장 / 오른쪽 근거 ──
     lcol, rcol = st.columns([3, 2])
@@ -523,7 +540,8 @@ with tabC:
 
     # ── 수정 · 재검증 ──
     with st.expander("원고 수정 · 재검증 (고치면 바로 다시 검사합니다)", expanded=edited):
-        b1, b2, b3, b4 = st.columns(4)
+        b1, b2, b3, b5, b4 = st.columns(5)
+        b5.button("안 되는 기능 넣어 보기", on_click=_append, args=(bk, "아이폰 통화도 자동으로 녹음됩니다."), width="stretch")
         b1.button("틀린 수치 넣어 보기", on_click=_append, args=(bk, "도입 기업의 통화 누락률이 87% 줄었습니다."), width="stretch")
         b2.button("조건 없는 99% 넣어 보기", on_click=_append, args=(bk, "녹취 성공률은 99%입니다."), width="stretch")
         b3.button("실제 고객명 넣어 보기", on_click=_append, args=(bk, "새봄물산 도입 사례도 있습니다."), width="stretch")
@@ -594,7 +612,7 @@ with tabC:
                     for i, f in enumerate(role_images(res, r_name), 1):
                         if f.exists():
                             z.write(f, f"{safe}/카드뉴스_{i}.jpg")
-                    rr = verify.review(t_now, b_now, r_data["블로그"]["문장"], LEDGER, RULES, VALID)
+                    rr = verify.review(t_now, b_now, r_data["블로그"]["문장"], LEDGER, RULES, VALID, BY_ID)
                     lines = [f"# 근거 보고서 — {ROLE_LABEL.get(r_name, r_name)}", "",
                              f"- 대상: {a.get('대상', '')}", f"- 승인: {a['시각']} · 검수 {a['점수']}점 · 검토 확인 {a['검토확인']}문장",
                              f"- 처리 기록: {a.get('메모') or '(없음)'}", "", "| 상태 | 표시 | 문장 | 근거 (출처: 원문) |", "|---|---|---|---|"]
@@ -630,15 +648,25 @@ with tabC:
         st.caption("저장한 규칙이 없습니다. 규칙을 저장하면 지금 원고를 바로 다시 검사하고, 다음 생성의 지시문에도 넣습니다.")
 
     # ── 검수기 자체 시험 ──
-    st.subheader("검수기 시험: 검출률과 오탐률")
-    t1, t2 = st.columns(2)
+    st.subheader("검수기 시험: 검출률 · 오탐률 · 표현 변형")
+    st.caption("합격 기준: 검출률 90% 이상, 오탐률 5% 이하, 표현 변형 오탐 0건. 세 시험 모두 AI 없이 코드로 실행되어 누가 눌러도 같은 값이 나옵니다.")
+    t1, t2, t3 = st.columns(3)
+    with t3:
+        st.caption("같은 수치를 '약 3,000석', '3000석', '3,000여 석'처럼 바꿔 써도 잘못 걸리지 않는지 봅니다.")
+        if st.button("표현 변형 시험", disabled=LEDGER is None):
+            st.session_state["vt"] = verify.variant_test(CARDS, CONFLICTS, LEDGER)
+        vt = st.session_state.get("vt")
+        if vt:
+            st.metric("표현 변형 오탐", f"{vt['잘못 걸림']}건", f"수치 {vt['수치']}개 × 표현 6가지 = {vt['변형 문장']}문장 · 기준 0건", delta_color="off")
+            if vt["표"]:
+                st.dataframe(vt["표"], width="stretch", hide_index=True, height=300)
     with t1:
         st.caption("정상 원고에 일부러 오류를 하나씩 넣고, 검수가 그 오류를 잡는지 셉니다.")
         if st.button("주입 시험 실행", disabled=LEDGER is None):
             st.session_state["inj"] = verify.injection_test(blog["제목"], blog["본문"], LEDGER, RULES)
         inj = st.session_state.get("inj")
         if inj:
-            st.metric("검출률", f"{inj['검출']} / {inj['주입']}", f"{round(100 * inj['검출'] / inj['주입'])}%", delta_color="off")
+            st.metric("검출률", f"{inj['검출']} / {inj['주입']}", f"{round(100 * inj['검출'] / inj['주입'])}% · 기준 90% 이상", delta_color="off")
             st.dataframe([{"일부러 넣은 오류": r["일부러 넣은 오류"], "결과": ("✅ " if r["결과"] == "검출" else "⛔ ") + r["결과"],
                            "검출 내용": r["검출 내용"], "점수": r["점수"]} for r in inj["표"]], width="stretch", hide_index=True, height=300)
     with t2:
@@ -647,7 +675,7 @@ with tabC:
             st.session_state["fp"] = verify.false_positive_test(CARDS, CONFLICTS, LEDGER)
         fp = st.session_state.get("fp")
         if fp:
-            st.metric("오탐률", f"{fp['오탐률']}%", f"정상 문장 {fp['정상 문장']}개 중 {fp['잘못 걸림']}개", delta_color="off")
+            st.metric("오탐률", f"{fp['오탐률']}%", f"정상 문장 {fp['정상 문장']}개 중 {fp['잘못 걸림']}개 · 기준 5% 이하", delta_color="off")
             if fp["표"]:
                 st.dataframe(fp["표"], width="stretch", hide_index=True, height=300)
                 st.caption("잘못 걸린 문장은 원문 구절에 없는 날짜·금액이 카드 요약에 들어간 경우입니다. 이런 문장은 사람이 확인합니다.")
