@@ -1,0 +1,6 @@
+.env
+output/
+vendor/
+inbox/
+__pycache__/
+*.pyc
