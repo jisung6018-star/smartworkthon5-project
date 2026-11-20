@@ -57,24 +57,49 @@ def read_photo(photo, meta: dict | None = None) -> dict:
 
 
 CONTENT_SCHEMA = {
-    "카드뉴스": [{"제목": "str: 16자 이내", "본문": ["str: 26자 이내 (1~3줄)"], "근거카드": ["str: 사실 카드 id"]}],
+    "카드뉴스": [{"제목": "str: 16자 이내", "본문": ["str: 26자 이내 (1~3줄)"], "근거카드": ["str: 사실 카드 id"],
+              "가치": "str: 이 카드가 쓴 설득 항목 (Problem / Value / Proof / 도입 제안 중 하나와, 어떤 내용인지 짧게)"}],
     "블로그": {"제목": "str",
             "문단": [{"소제목": "str", "문장": [{"글": "str: 한 문장", "근거카드": ["str: 이 문장의 사실 근거. 표현일 뿐이면 빈 목록"]}]}],
             "태그": ["str: # 포함"]},
 }
 
 
-def _prompt(role: str, decider: dict, info: dict, rules: list[dict]) -> str:
+STRATEGY_LABELS = {"Who": "누구인가", "Problem": "겪는 문제", "WhyNow": "구매 계기", "Value": "제품의 가치", "Objection": "망설이는 이유", "Proof": "증거"}
+
+
+def _industry_block(role: str, industry: dict | None, playbook: dict | None, photo_sector: str) -> str:
+    """선택한 산업과 그 결정자의 설득 전략 카드(6항목)를 지시문에 넣습니다. 산업을 고르지 않으면 빈 문자열."""
+    if not industry:
+        return ""
+    lines = [f"[대상 산업] {industry['산업']} ({industry['범위']}) · 전략 초점: {industry['전략초점']}. 이 산업의 '{role}'에게 쓰는 글입니다."]
+    if playbook:
+        lines.append("[설득 전략 카드] 아래 여섯 항목을 설득의 뼈대로 삼으세요.")
+        for k, name in STRATEGY_LABELS.items():
+            item = playbook.get(k) or {}
+            cited = f" (근거 {', '.join(item['근거카드'])})" if item.get("근거카드") else ""
+            lines.append(f" - {k} {name} [{item.get('표시', 'AI 추론')}]: {item.get('글', '')}{cited}")
+        lines.append(" - [AI 추론] 항목(고객의 문제·계기·망설임)은 확인된 사실처럼 단정하지 말고 '~라면', '~일 수 있습니다'처럼 쓰세요.")
+        lines.append(" - [검증 필요] 항목은 수치를 단정하지 말고 [확인 필요]를 붙이세요.")
+    lines.append(f" - 현장 사진의 업종은 '{photo_sector or '표기 없음'}'입니다. 이 산업과 다르면 사진은 설치 방식의 예로만 쓰고, 이 산업의 도입 사례라고 쓰지 마세요.")
+    return "\n".join(lines) + "\n"
+
+
+def _prompt(role: str, decider: dict, info: dict, rules: list[dict], industry: dict | None = None, playbook: dict | None = None) -> str:
     p = info["사진정보"]
     banned = "\n".join(f"- '{r['금지']}' 대신 '{r.get('대체') or '(쓰지 않음)'}'" for r in rules) or "- (없음)"
     return f"""티링크 비즈레코딩의 홍보 콘텐츠를 '{role}'에게 맞춰 쓰세요. 같은 현장 사진 한 장을 세 결정자에게 다르게 보여 주는 작업 중 하나입니다.
 
 [이 결정자] 관심사: {decider.get('관심사')} / 걱정: {decider.get('걱정')} / 내세울 것: {', '.join(decider.get('설득포인트', []))}
-[현장 사진] 설치 형태: {info['판독']['설치형태']} / 보이는 장비: {', '.join(info['판독']['보이는장비'])} / 현장 특징: {info['판독']['현장특징']}
+{_industry_block(role, industry, playbook, p['업종'])}[현장 사진] 설치 형태: {info['판독']['설치형태']} / 보이는 장비: {', '.join(info['판독']['보이는장비'])} / 현장 특징: {info['판독']['현장특징']}
            업종: {p['업종'] or '표기 없음'} / 고객명(가린 이름 그대로 사용): {p['가린고객명'] or '표기 없음'} / 홈페이지 설명: {p['홈페이지설명']}
 
-① 카드뉴스 4장 (이 사진 위에 올릴 문구)
- 1장 표지: 이 결정자의 걱정을 건드리는 한 줄 / 2장: 이 현장이 어떤 상황이었는지 / 3장: 티링크가 어떻게 해결하는지(이 결정자에게 중요한 차별점) / 4장: 다음 행동(무료 상담)
+① 카드뉴스 4장 (이 사진 위에 올릴 문구). 순서는 반드시 아래와 같습니다.
+ 1장 고객의 문제: 이 결정자가 지금 겪는 문제를 건드려 관심을 끄는 한 줄
+ 2장 해결 방식: 티링크가 그 문제를 어떻게 푸는지 (제품의 가치)
+ 3장 기능·도입 사례·근거: 믿을 수 있는 근거 (사실 카드의 기능·실적, 이 현장의 설치 이야기)
+ 4장 도입 제안: 다음 행동 (무료 상담 문의)
+ 이 현장의 설치 이야기는 2장이나 3장에 넣으세요. 카드마다 '가치'에 이 카드가 쓴 설득 항목을 적고, 사실에는 근거 카드 id 를 붙이세요.
 ② 블로그 원고 (회사 가이드라인의 '추천 본문 구성' 5단계를 순서대로 소제목으로)
  - 제목과 첫 문단에 '티링크 비즈레코딩', '영업사원 통화관리', '휴대폰 통화녹음', '인터넷전화 자동녹취'를 자연스럽게 넣으세요.
  - 필수 키워드 '통화요약', '콜센터 프로그램', '업무자동화'를 제목과 본문에 넣으세요.
@@ -94,14 +119,18 @@ def _prompt(role: str, decider: dict, info: dict, rules: list[dict]) -> str:
 
 
 def make_for_role(role: str, decider: dict, info: dict, cards: list[dict], conflicts: list[dict], guideline: str,
-                  rules: list[dict] | None = None) -> dict:
+                  rules: list[dict] | None = None, industry: dict | None = None, playbook: dict | None = None) -> dict:
+    """industry(산업 프로필)와 playbook(그 산업 × 결정자의 설득 전략 카드)을 주면 그 산업의 구매자에게 맞춰 씁니다."""
     ok = [c for c in cards if c["원문확인"]]
     facts = "\n".join(f"{c['id']} [{c['유형']}] {c['내용']}" + (" (" + ", ".join(f"{v.get('값')}" + (f"·{v['한정어']}" if v.get("한정어") else "") for v in c["수치"]) + ")" if c.get("수치") else "")
                       for c in ok)
     conf = "\n".join(f"- {x['항목']} [{x['종류']}]: {x['내용'][:160]} → {x['처리']}" for x in conflicts)
     text = f"<가이드라인>\n{guideline}\n</가이드라인>\n\n<자료 간 충돌>\n{conf}\n</자료 간 충돌>\n\n<사실 카드>\n{facts}\n</사실 카드>"
-    out = llm.ask_json(_prompt(role, decider, info, rules or []), CONTENT_SCHEMA, text=text, effort="medium", max_tokens=16000)
+    out = llm.ask_json(_prompt(role, decider, info, rules or [], industry, playbook), CONTENT_SCHEMA, text=text, effort="medium", max_tokens=16000)
     out["카드뉴스"] = out["카드뉴스"][:4]
+    valid = {c["id"] for c in ok}
+    for card in out["카드뉴스"]:                       # 메시지마다 실제로 있는 사실 카드 번호만 남김
+        card["근거카드"] = [i for i in card.get("근거카드", []) if i in valid]
     return out
 
 

@@ -41,7 +41,7 @@ def _n(s) -> str:
 
 # ───────────────────────── 기준 만들기 ─────────────────────────
 def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -> dict:
-    allowed, examples, quals = {}, {}, {}
+    allowed, examples, quals, quoted = {}, {}, {}, {}
     for c in cards:
         if not c.get("원문확인"):
             continue
@@ -50,6 +50,15 @@ def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -
                 continue
             num = round(float(v["숫자"]), 2)
             (examples if c.get("유형") == "화면 예시 값" else allowed).setdefault(num, []).append(c["id"])
+        # 원문 구절(코드가 원문과 대조해 확인한 글자)에 적힌 숫자도 자료에 있는 숫자로 인정
+        if c.get("유형") == "화면 예시 값":
+            continue
+        for m in NUMBER.finditer(c.get("원문") or ""):
+            try:
+                num = round(float(m.group(1).replace(",", "")), 2)
+            except ValueError:
+                continue
+            quoted.setdefault(num, set()).add((m.group(2) or "").replace(" ", ""))   # 숫자 → 원문에서 함께 쓰인 단위
     for x in conflicts:
         if x["종류"] == "조건이 한쪽에만 있음":
             nums = [round(float(v["숫자"]), 2) for cid in x["카드"] for c in cards if c["id"] == cid
@@ -74,7 +83,7 @@ def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -
     # 자료에 실제로 나오는 말 (자료에 공개된 구축 사례 이름은 써도 되고, 자료에 없는 이름은 고객명 후보로 봄)
     corpus = _n(" ".join(f"{c.get('내용', '')} {c.get('원문', '')}" for c in cards if c.get("원문확인"))
                 + " ".join(f"{p.get('업종', '')} {p.get('홈페이지설명', '')}" for p in photos) + COMMON_WORDS)
-    return {"허용숫자": allowed, "예시숫자": examples, "조건": quals, "확인필요": confirm, "가린고객명": masked, "자료어휘": corpus}
+    return {"허용숫자": allowed, "예시숫자": examples, "조건": quals, "확인필요": confirm, "가린고객명": masked, "자료어휘": corpus, "원문숫자": quoted}
 
 
 def load_rules() -> list[dict]:
@@ -126,27 +135,31 @@ def _sentences(body: str) -> list[str]:
     return out
 
 
-def check(title: str, body: str, ledger: dict, rules: list[dict] | None = None) -> dict:
+def check(title: str, body: str, ledger: dict, rules: list[dict] | None = None, doc_level: bool = True) -> dict:
+    """doc_level=False 이면 문장 단위 검사(숫자·조건·충돌·과장·연락처·고객명·금지 표현)만 합니다."""
     issues = []
 
     def add(kind, text, detail, weight):
-        issues.append({"종류": kind, "문장": text[:90], "설명": detail, "감점": weight})
+        issues.append({"종류": kind, "문장": text[:90], "설명": detail, "감점": weight,
+                       "상태": "차단" if weight >= BLOCK_AT else "검토 필요"})
 
     full = title + "\n" + body
-    for kw in REQUIRED:
-        if _n(kw) not in _n(title):
-            add("필수 키워드", title, f"제목에 '{kw}' 없음", 4)
-        if _n(kw) not in _n(body):
-            add("필수 키워드", "(본문)", f"본문에 '{kw}' 없음", 4)
-    ms = missions(title, body)
-    for m in ms:
-        if m["결과"] != "통과":
-            add("미션", f"미션 {m['미션']}", m["내용"], 4)
-    for item in FOOTER_ITEMS:
-        if item not in body:
-            add("하단 정보", "(하단)", f"'{item}' 없음", 3)
-    if not re.search(r"광고|경제적\s*이해관계|제공받아", body):
-        add("광고 표기", "(하단)", "광고임을 밝히는 문구가 없음", 10)
+    ms = []
+    if doc_level:
+        for kw in REQUIRED:
+            if _n(kw) not in _n(title):
+                add("필수 키워드", title, f"제목에 '{kw}' 없음", 4)
+            if _n(kw) not in _n(body):
+                add("필수 키워드", "(본문)", f"본문에 '{kw}' 없음", 4)
+        ms = missions(title, body)
+        for m in ms:
+            if m["결과"] != "통과":
+                add("미션", f"미션 {m['미션']}", m["내용"], 4)
+        for item in FOOTER_ITEMS:
+            if item not in body:
+                add("하단 정보", "(하단)", f"'{item}' 없음", 3)
+        if not re.search(r"광고|경제적\s*이해관계|제공받아", body):
+            add("광고 표기", "(하단)", "광고임을 밝히는 문구가 없음", 10)
     for s in _sentences(full):
         plain = STRIP.sub(" ", s)
         for m in NUMBER.finditer(plain):
@@ -160,7 +173,8 @@ def check(title: str, body: str, ledger: dict, rules: list[dict] | None = None) 
             scaled = round(num * 1e4, 2) if unit.startswith("만") else round(num * 1e8, 2) if unit.startswith("억") else num
             if scaled in ledger["허용숫자"]:                 # '30만원'은 사실 카드의 300,000 과 같은 값
                 num = scaled
-            if num in ledger["허용숫자"]:
+            in_quote = num not in ledger["예시숫자"] and unit in ledger.get("원문숫자", {}).get(num, ())   # 원문 구절에 같은 단위로 적힌 숫자
+            if num in ledger["허용숫자"] or in_quote:
                 q = ledger["조건"].get(num)
                 if q and unit in ("%", "퍼센트", "개", "개국") and not any(_n(w) in _n(s) for w in q["단어"]):
                     add("조건 누락", s, f"{raw}{unit}에는 '{q['단어'][0]}' 조건을 함께 써야 함 ({q['항목']})", 8)
@@ -179,7 +193,8 @@ def check(title: str, body: str, ledger: dict, rules: list[dict] | None = None) 
             if r["금지"] and r["금지"] in s:
                 add("금지 표현", s, f"담당자가 금지한 '{r['금지']}'" + (f" → '{r['대체']}'" if r.get("대체") else ""), 5)
     for name, ctx in _unmasked_names(full, ledger):
-        add("고객명", ctx, f"'{name}'은 가린 이름이 아님 (설치 사례 고객명은 가린 이름만 사용)", 10)
+        line = next((ln.strip() for ln in full.splitlines() if name in ln), ctx)
+        add("고객명", line, f"'{name}'은 가린 이름이 아님 (설치 사례 고객명은 가린 이름만 사용)", 10)
     score = max(0, 100 - sum(i["감점"] for i in issues))
     blocks = sum(1 for i in issues if i["감점"] >= BLOCK_AT)
     state = "차단" if blocks else "검토 필요" if issues else "통과"
@@ -219,18 +234,89 @@ def _unmasked_names(full: str, ledger: dict) -> list[tuple[str, str]]:
 
 def label_sentences(sentences: list[dict], result: dict, valid_cards: set[str]) -> list[dict]:
     """블로그 문장마다 [확인된 사실] / [AI 추론] / [확인 필요]. 표시는 코드가 정합니다."""
-    flagged = [i["문장"] for i in result["문제"] if i["감점"] >= 5]
     out = []
     for s in sentences:
         cited = [c for c in s.get("근거카드", []) if c in valid_cards]
-        if any(f and (f in s["글"] or s["글"][:60] in f) for f in flagged) or "[확인 필요" in s["글"]:
+        mine = _issues_of(s["글"], result)
+        if any(i["감점"] >= 5 for i in mine) or "[확인 필요" in s["글"]:
             lab = "확인 필요"
         elif cited:
             lab = "확인된 사실"
         else:
             lab = "AI 추론"
-        out.append({**s, "근거카드": cited, "표시": lab})
+        out.append({**s, "근거카드": cited, "표시": lab, "상태": _state(lab, mine), "문제": [i["설명"] for i in mine]})
     return out
+
+
+STATES = ("통과", "검토 필요", "차단", "미검사")
+
+
+def _issues_of(text: str, result: dict) -> list[dict]:
+    t = text.strip()
+    return [i for i in result["문제"] if i["문장"] and not i["문장"].startswith("(") and (i["문장"] in t or t[:60] in i["문장"])]
+
+
+def _state(label: str, mine: list[dict]) -> str:
+    """문장별 검수 상태. 차단: 수치·조건·고객명·연락처 위반 / 검토 필요: 가벼운 위반, 근거 카드가 없는 문장, [확인 필요] 표시 문장."""
+    if any(i["감점"] >= BLOCK_AT for i in mine):
+        return "차단"
+    if mine or label in ("AI 추론", "확인 필요"):
+        return "검토 필요"
+    return "통과"
+
+
+def units(body: str) -> list[dict]:
+    """본문을 줄 단위로 나눕니다 (원고는 한 줄에 한 문장). 종류: 소제목 / 문장 / 고정 문구(태그·하단 정보·광고 표기)."""
+    out = []
+    for line in body.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("■"):
+            kind = "소제목"
+        elif s.startswith("#") or s.startswith("※") or any(f in s for f in FOOTER_ITEMS):
+            kind = "고정 문구"
+        else:
+            kind = "문장"
+        out.append({"글": s, "종류": kind})
+    return out
+
+
+def review(title: str, body: str, original: list[dict], ledger: dict | None, rules: list[dict] | None, valid_cards: set[str]) -> dict:
+    """화면의 재검증: 지금 원고(담당자가 고쳤을 수 있음)를 검사하고 문장마다 표시·상태·근거 카드를 붙입니다.
+    AI 가 쓴 문장과 글자가 같으면 그 문장의 근거 카드를 이어받고, 담당자가 고치거나 새로 쓴 문장은 근거 없는 문장으로 봅니다.
+    기준(ledger)이 없거나 검사가 실패하면 모든 문장이 '미검사'입니다."""
+    by_text = {s["글"].strip(): s for s in original}
+    rows = [u for u in units(body) if u["종류"] == "문장"]
+    try:
+        if ledger is None:
+            raise ValueError("검수 기준(사실 카드)이 없음")
+        result = check(title, body, ledger, rules)
+    except Exception as e:  # noqa: BLE001 — 검사 실패는 화면을 멈추지 않고 '미검사'로 표시
+        return {"검수": None, "오류": str(e)[:120],
+                "문장": [{"글": u["글"], "근거카드": [], "표시": "미검사", "상태": "미검사", "문제": [], "수정됨": u["글"] not in by_text} for u in rows]}
+    sentences = [{"글": u["글"], "근거카드": by_text.get(u["글"], {}).get("근거카드", []), "소제목": by_text.get(u["글"], {}).get("소제목", "")} for u in rows]
+    labeled = label_sentences(sentences, result, valid_cards)
+    for s in labeled:
+        s["수정됨"] = s["글"] not in by_text
+    n = len(labeled) or 1
+    result["문장통계"] = {k: sum(1 for s in labeled if s["상태"] == k) for k in STATES}
+    result["통과율"] = round(100 * result["문장통계"]["통과"] / n)
+    return {"검수": result, "오류": "", "문장": labeled}
+
+
+def false_positive_test(cards: list[dict], conflicts: list[dict], ledger: dict) -> dict:
+    """오탐률: 원문 일치가 확인된 사실 카드의 문장(맞는 문장)을 그대로 검사했을 때 잘못 걸리는 비율.
+    자료 간 충돌에 걸린 카드와 화면 예시 값 카드는 원래 경고가 나와야 하므로 제외합니다."""
+    in_conflict = {cid for x in conflicts for cid in x["카드"]}
+    pool = [c for c in cards if c.get("원문확인") and c["id"] not in in_conflict and c.get("유형") != "화면 예시 값"]
+    rows = []
+    for c in pool:
+        r = check("", c["내용"], ledger, None, doc_level=False)
+        if r["문제"]:
+            rows.append({"카드": c["id"], "출처": c["출처"], "문장": c["내용"][:80], "잘못 걸린 이유": " / ".join(f"{i['종류']}: {i['설명']}" for i in r["문제"])[:160]})
+    n = len(pool) or 1
+    return {"정상 문장": len(pool), "잘못 걸림": len(rows), "오탐률": round(100 * len(rows) / n, 1), "표": rows}
 
 
 # ───────────────────────── 주입 시험 ─────────────────────────
