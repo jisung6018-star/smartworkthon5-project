@@ -1,4 +1,4 @@
-"""팩트마케터 웹 화면 — ① 기업 분석 및 전략 · ② 맞춤형 콘텐츠 · ③ 근거 검증 및 승인 · ④ 현장 진단.
+"""팩트마케터 웹 화면 — ① 기업 분석 및 전략 · ② 맞춤형 콘텐츠 · ③ 근거 검증 및 승인.
 
     python -m streamlit run app.py
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from kit import analysis, config, content, diagnose, llm, verify
+from kit import analysis, config, content, llm, verify
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -184,7 +184,7 @@ with st.sidebar:
     if st.button("결과 새로 읽기", width="stretch"):
         st.rerun()
 
-tabA, tabB, tabC, tabD = st.tabs(["① 기업 분석 및 전략", "② 맞춤형 콘텐츠", "③ 근거 검증 및 승인", "④ 현장 진단"])
+tabA, tabB, tabC = st.tabs(["① 기업 분석 및 전략", "② 맞춤형 콘텐츠", "③ 근거 검증 및 승인"])
 
 # ═════════════════════════ ① 기업 분석 및 전략 ═════════════════════════
 with tabA:
@@ -359,175 +359,6 @@ with tabA:
             st.caption(f"실제 자료 {len(D['pages'])}쪽 중 지시문 의심 쪽: {len(flagged)}개" + (f" ({', '.join(flagged[:5])})" if flagged else ""))
     except Exception as e:  # noqa: BLE001
         st.caption(f"지시문 검사 모듈을 불러오지 못했습니다 ({str(e)[:60]})")
-
-# ═════════════════════════ ④ 현장 진단 ═════════════════════════
-with tabD:
-    st.caption("잠재 고객이 보낸 현장 사진 → AI는 보이는 것만 관찰 → 설치 형태는 규칙표(코드)가 판정 → 비슷한 실제 설치 사례 → 결정자 맞춤 제안 카드 → 코드 검수. "
-               "티링크 홈페이지의 \"현장 사진 몇 장만 보내주셔도 설치 방법과 비용을 안내해 드립니다\"(F218)를 도구로 옮긴 것입니다. 사진만으로 확정하지 않습니다.")
-    UPLOADS = config.OUT / "uploads"
-    dl, dm, dr = st.columns([1.05, 1.35, 1.6])
-    with dl:
-        st.markdown("**① 사진과 고객 정보**")
-        src = st.radio("사진", ["사진 올리기", "설치 사례 사진으로 시험"], horizontal=True, label_visibility="collapsed")
-        dx_paths, dx_exclude = [], set()
-        if src == "사진 올리기":
-            ups_dx = st.file_uploader("고객 현장 사진 (1~3장: 단자함 · 서버 랙 · 전화 주변)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="dx_up")
-            known = {hashlib.sha256(f.read_bytes()).hexdigest(): f.name for f in SITE.glob("photo_*.jpg")} if SITE.exists() else {}
-            for i, u in enumerate((ups_dx or [])[:3], 1):
-                data = bytes(u.getbuffer())
-                UPLOADS.mkdir(parents=True, exist_ok=True)
-                f = UPLOADS / f"upload_{hashlib.sha256(data).hexdigest()[:8]}{Path(u.name).suffix.lower() or '.jpg'}"     # 원래 파일명은 쓰지 않음
-                f.write_bytes(data)
-                dx_paths.append(f)
-                if hashlib.sha256(data).hexdigest() in known:            # 설치 사례 사진과 같은 파일이면 사례 목록에서 제외 (정답 유출 방지)
-                    dx_exclude.add(known[hashlib.sha256(data).hexdigest()])
-        else:
-            gallery = [p["파일"] for p in D["photos"] if p.get("구분") == "갤러리"] or [p["파일"] for p in D["photos"]]
-            if gallery:
-                one = st.selectbox("설치 사례 사진", gallery, format_func=lambda n: Path(n).stem + " · " + next((p.get("업종", "") for p in D["photos"] if p["파일"] == n), ""))
-                dx_paths, dx_exclude = [SITE / one], {one}
-            else:
-                st.caption("설치 사례 사진이 없습니다.")
-        for f in dx_paths:
-            if f.exists():
-                st.image(str(f), width="stretch")
-        dx_industry = st.selectbox("업종", ["공공 · 복지", "금융", "교육", "의료", "기업"], index=1)
-        dx_role = st.selectbox("결정자", analysis.ROLES, index=2, format_func=lambda r: ROLE_LABEL.get(r, r))
-        if DEMO:
-            st.info("보기 전용 데모라 새 진단은 실행하지 않습니다. 아래 기록에서 미리 진단한 결과를 볼 수 있습니다.")
-        if st.button("현장 진단 실행", type="primary", disabled=DEMO or not dx_paths,
-                     help="사진 관찰(AI) → 규칙표 판정(코드) → 사례 매칭(코드) → 제안 카드(AI) → 검수(코드). 20~40초"):
-            with st.status("진단 중… 관찰 → 판정 → 사례 → 제안 카드 → 검수", expanded=True) as box:
-                dg = diagnose.run(dx_paths, dx_industry, dx_role, exclude=dx_exclude)
-                diagnose.save(dg)
-                st.session_state["dx_id"] = dg["진단번호"]
-                box.update(label=f"진단 완료 · {dg['상태']} · " + llm.usage_text(), state="complete" if dg["상태"] != "미검사" else "error")
-                st.rerun()
-        history = diagnose.load_all()
-        ids = [h["진단번호"] for h in history]
-        if ids:
-            cur_dx = st.session_state.get("dx_id")
-            pick_dx = st.selectbox("진단 기록", ids, index=ids.index(cur_dx) if cur_dx in ids else 0,
-                                   format_func=lambda i: next(f"{h['진단번호']} · {h.get('업종', '')} · {h.get('설치형태') or '미검사'}" for h in history if h["진단번호"] == i))
-            dg = next(h for h in history if h["진단번호"] == pick_dx)
-        else:
-            dg = None
-
-    if not dg:
-        dm.info("아직 진단 기록이 없습니다. 사진을 넣고 '현장 진단 실행'을 누르세요.")
-    else:
-        obs = dg.get("관찰") or {}
-        with dm:
-            st.markdown(f"**② AI 관찰** — {dg['진단번호']} · {', '.join(dg.get('사진', []))}")
-            if dg.get("오류"):
-                st.error(f"{dg['오류']} → 미검사. 승인할 수 없습니다.")
-            st.dataframe([{"관찰 항목": k, "값": (", ".join(v) if isinstance(v, list) else v) or "-"} for k, v in
-                          [("서버·통신 랙", obs.get("랙있음")), ("단자함 공간", obs.get("단자함공간")), ("본체를 세울 자리", obs.get("바닥책상공간")),
-                           ("벽 부착", obs.get("벽부착")), ("현장 규모", obs.get("현장규모")), ("관찰 확신", obs.get("확신")),
-                           ("보이는 장비", obs.get("보이는장비") or []), ("사진 속 글자 (데이터로만 취급)", obs.get("사진속글자") or []),
-                           ("보이는 개인정보", obs.get("개인정보") or [])]], width="stretch", hide_index=True)
-            st.caption("AI는 설치 형태를 고르지 않습니다. 보이는 것만 적고, 판정은 아래 규칙표가 합니다. 같은 관찰에는 항상 같은 판정이 나옵니다.")
-            st.markdown("**③ 규칙표 판정 (코드)**")
-            st.dataframe([{"적용": "▶" if r[0] == dg.get("규칙") else "", "규칙": r[0], "판정": r[1], "조건": r[2], "근거 카드": " ".join(r[3])} for r in diagnose.RULES]
-                         + [{"적용": "▶" if dg.get("규칙") == "R0" else "", "규칙": "R0", "판정": diagnose.UNKNOWN, "조건": "위 규칙에 맞지 않거나 관찰 확신이 낮음", "근거 카드": ""}],
-                         width="stretch", hide_index=True)
-            for w in dg.get("경고", []):
-                st.warning(w)
-            if dg.get("규칙근거카드"):
-                show_cards(dg["규칙근거카드"])
-        with dr:
-            unknown = dg.get("설치형태") == diagnose.UNKNOWN
-            st.markdown(f"**④ 진단 결과** {chip(dg.get('상태', '미검사'))}")
-            st.markdown(f"### {dg.get('설치형태') or '미검사'}" + ("" if unknown or not dg.get("설치형태") else " 추천 (사진 기준)"))
-            st.caption(f"{dg.get('규칙', '')}: {dg.get('규칙설명', '')} · 최종 설치 방법과 비용은 현장 확인 후 확정합니다.")
-            cases = dg.get("비슷한사례") or []
-            if cases:
-                st.markdown("**비슷한 실제 설치 사례** (고객명은 홈페이지에 가려진 이름 그대로)")
-                for col, c in zip(st.columns(len(cases)), cases):
-                    with col:
-                        if (SITE / c["파일"]).exists():
-                            st.image(str(SITE / c["파일"]), width="stretch")
-                        st.caption(f"{c.get('가린고객명') or '설치 형태 예시'} · {c.get('업종') or '-'} · {c['설치형태']} ({c.get('설치형태출처', '')})")
-            card = dg.get("제안카드")
-            if card:
-                st.markdown(f"**⑤ {ROLE_LABEL.get(dg.get('결정자'), dg.get('결정자'))}용 제안 카드** — 고치면 바로 다시 검사합니다")
-                kt, kb, kn = f"dxt|{dg['진단번호']}", f"dxb|{dg['진단번호']}", f"dxn|{dg['진단번호']}"
-                st.session_state.setdefault(kt, card.get("제목", ""))
-                st.session_state.setdefault(kb, "\n".join(card.get("본문", [])))
-                st.session_state.setdefault(kn, card.get("다음단계", ""))
-
-                def _dx_add(key: str, text: str):
-                    st.session_state[key] = st.session_state[key].rstrip() + "\n" + text
-
-                def _dx_reset(a: str, b: str, c: str, src: dict):
-                    st.session_state[a], st.session_state[b], st.session_state[c] = src.get("제목", ""), "\n".join(src.get("본문", [])), src.get("다음단계", "")
-
-                st.text_input("제목", key=kt)
-                st.text_area("본문", key=kb, height=130)
-                st.text_input("다음 단계", key=kn)
-                q1, q2 = st.columns(2)
-                q1.button("설치비 문구 넣어 보기", on_click=_dx_add, args=(kb, "설치비는 30만원입니다."), width="stretch")
-                q2.button("원래 카드로 되돌리기", on_click=_dx_reset, args=(kt, kb, kn, card), width="stretch")
-                now_card = {"제목": st.session_state[kt], "본문": [x for x in st.session_state[kb].splitlines() if x.strip()], "다음단계": st.session_state[kn],
-                            "근거카드": card.get("근거카드", [])}
-                try:
-                    ck = diagnose.check_proposal(now_card, LEDGER, RULES)
-                except Exception as e:  # noqa: BLE001
-                    ck = {"상태": "미검사", "문제": [{"종류": "검사 실패", "설명": str(e)[:100], "상태": "미검사"}]}
-                st.markdown(f"검수 {chip(ck['상태'])} {ids_text(card.get('근거카드', []))}")
-                for i in ck.get("문제", []):
-                    st.markdown(f"{chip(i.get('상태', '검토 필요'))} {i.get('종류', '')}: {md(i.get('설명', ''))}")
-                ap_dx = approvals()
-                uid_dx = f"DX|{dg['진단번호']}"
-                text_now = diagnose.card_text(now_card)
-                h_dx = digest(now_card["제목"], text_now)
-                rec_dx = ap_dx.get(uid_dx)
-                if rec_dx and rec_dx["해시"] != h_dx:
-                    ap_dx.pop(uid_dx, None)
-                    save_approvals()
-                    rec_dx = None
-                    st.warning("승인한 뒤 카드가 수정되어 승인이 해제되었습니다.")
-                blocked = ck["상태"] in ("차단", "미검사") or dg.get("상태") == "미검사"
-                if blocked:
-                    st.error("차단 또는 미검사 상태라 승인할 수 없습니다.")
-                if rec_dx:
-                    st.success(f"승인됨 · {rec_dx['시각']}")
-                w1, w2 = st.columns(2)
-                if w1.button("승인 취소" if rec_dx else "제안 카드 승인", type="secondary" if rec_dx else "primary", disabled=not rec_dx and blocked, key=f"dxap|{dg['진단번호']}"):
-                    if rec_dx:
-                        ap_dx.pop(uid_dx, None)
-                    else:
-                        ap_dx[uid_dx] = {"해시": h_dx, "시각": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "점수": 100, "검토확인": 0, "메모": "",
-                                         "대상": f"현장 진단 {dg['진단번호']}"}
-                    save_approvals()
-                    st.rerun()
-                if rec_dx:
-                    buf = io.BytesIO()
-                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-                        z.writestr("제안_카드.txt", text_now + "\n")
-                        z.writestr("진단_결과.json", json.dumps({k: v for k, v in dg.items() if k != "제안카드"} | {"제안카드": now_card}, ensure_ascii=False, indent=1))
-                        z.writestr("근거.md", "\n".join([f"# 현장 진단 {dg['진단번호']} 근거", "", f"- 판정: {dg.get('설치형태')} ({dg.get('규칙')}: {dg.get('규칙설명')})",
-                                                        f"- 승인: {rec_dx['시각']}", ""] + [f"- {c} {BY_ID[c]['출처']}: “{BY_ID[c].get('원문', '')}”"
-                                                                                          for c in [*dg.get("규칙근거카드", []), *card.get("근거카드", [])] if c in BY_ID]))
-                    w2.download_button("승인한 제안 카드 내려받기", buf.getvalue(), file_name=f"현장진단_{dg['진단번호']}.zip", mime="application/zip")
-
-    dxt = jload(DATA / "diagnosis_test.json")
-    if dxt:
-        with st.expander("진단 시험 결과 (정답 사진 · 악성 쪽지 · 확신 낮음)"):
-            sm, note = dxt["요약"], dxt.get("악성쪽지", {})
-            x1, x2, x3, x4 = st.columns(4)
-            x1.metric("정답 사진 판정", f"{sm['일치']} / {sm['정답사진']}", "틀린 형태를 추천한 사진 0장" if all(r.get("일치") or r.get("판정") == diagnose.UNKNOWN for r in dxt["표"] if "기대" in r) else None, delta_color="off")
-            x2.metric("사진 속 지시문", "판정 불변" if sm.get("악성쪽지_판정불변") else "판정 바뀜", "경고 표시됨" if sm.get("악성쪽지_경고") else "경고 없음", delta_color="off")
-            x3.metric("확신 낮음", "현장 확인 필요" if sm.get("확신낮음_R0") else "실패", "사진만으로 정하지 않음", delta_color="off")
-            x4.metric("갤러리 11장", f"{sm.get('갤러리_두모델직접판독과같음', 0)} / {sm.get('갤러리_두모델직접판독과비교', 0)}", "두 모델의 직접 판독과 같은 판정", delta_color="off")
-            st.caption(dxt.get("주의", "") + " 자료에 설치 전 고객 사진은 없습니다. 갤러리 사진은 정답이 없어 참고값만 적습니다.")
-            st.dataframe([{"사진": r["사진"], "기대": r.get("기대", "(정답 없음)"), "판정": r["판정"], "규칙": r["규칙"],
-                           "일치": "✅" if r.get("일치") else ("현장 확인으로 넘김" if "기대" in r and r["판정"] == diagnose.UNKNOWN else ("⛔" if "기대" in r else "")),
-                           "랙": r["관찰"].get("랙있음"), "단자함": r["관찰"].get("단자함공간"), "세울 자리": r["관찰"].get("바닥책상공간"),
-                           "벽 부착": r["관찰"].get("벽부착"), "규모": r["관찰"].get("현장규모")} for r in dxt["표"]], width="stretch", hide_index=True, height=330)
-            if note:
-                st.markdown(f"**악성 쪽지 시험**: 사진 위에 “{md(note.get('쪽지', ''))}”를 합성 → 판정 {note.get('원래판정')} → {note.get('쪽지판정')} "
-                            f"({'바뀌지 않음' if note.get('판정불변') else '바뀜'}). 쪽지 글자는 읽었지만 지시로 따르지 않고 경고만 표시했습니다.")
 
 # ═════════════════════════ ② 맞춤형 콘텐츠 ═════════════════════════
 with tabB:
