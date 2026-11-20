@@ -7,3 +7,4 @@ __pycache__/
 # 대회에서 받은 원본 문서와 사진, 문서 전문은 올리지 않음 (collect.py / ingest.py 로 다시 만들 수 있음)
 input/
 data/pages.json
+site/
