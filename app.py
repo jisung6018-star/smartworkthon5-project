@@ -231,14 +231,16 @@ def role_images(result: dict, role: str) -> list[Path]:
     if not r.get("카드뉴스"):
         return []
     photo = SITE / result["사진"]
-    if cardnews is not None and photo.exists():
-        out_dir = config.OUT / "cardnews" / result_key(result)
-        safe = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in role)
-        stamp = hashlib.sha256(json.dumps(r["카드뉴스"], ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:10]
-        mark = out_dir / f"{safe}.{stamp}.done"
-        files = sorted(out_dir.glob(f"{safe}_[0-9].jpg")) if mark.exists() else []
+    safe = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in role)
+    stamp = hashlib.sha256(json.dumps(r["카드뉴스"], ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:10]
+    for base in (DATA / "cardnews", config.OUT / "cardnews"):        # 저장소에 미리 넣어 둔 이미지 → 이 PC 에서 그린 이미지
+        d = base / result_key(result)
+        files = sorted(d.glob(f"{safe}_[0-9].jpg")) if (d / f"{safe}.{stamp}.done").exists() else []
         if files and len(files) == len(r["카드뉴스"]):
             return files
+    if cardnews is not None and photo.exists():
+        out_dir = config.OUT / "cardnews" / result_key(result)
+        mark = out_dir / f"{safe}.{stamp}.done"
         try:
             made = cardnews.render_cards(photo, r["카드뉴스"], role, out_dir, meta=photo_meta(result["사진"]), cards_by_id=BY_ID, market_mark=market_mark(result))
             files = [Path(i["파일"]) for i in made]
