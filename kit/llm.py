@@ -482,19 +482,19 @@ def _run(prompt, text, files, system, schema, effort, max_tokens, prov: str | No
 
 # ───────────────────────── 공개 함수 ─────────────────────────
 def ask(prompt: str, text: str | None = None, files: Iterable | None = None, system: str | None = None,
-        effort: str = "medium", max_tokens: int = 16000) -> str:
-    """자유 형식 답변. text=참고 자료 문자열, files=PDF·이미지·기타 파일 경로 목록."""
-    return _run(prompt, text, files, system, None, effort, max_tokens)
+        effort: str = "medium", max_tokens: int = 16000, provider: str | None = None) -> str:
+    """자유 형식 답변. text=참고 자료 문자열, files=PDF·이미지·기타 파일 경로 목록. provider 로 모델 회사를 지정할 수 있음."""
+    return _run(prompt, text, files, system, None, effort, max_tokens, prov=provider)
 
 
 def ask_json(prompt: str, schema, text: str | None = None, files: Iterable | None = None,
-             system: str | None = None, effort: str = "medium", max_tokens: int = 16000) -> Any:
+             system: str | None = None, effort: str = "medium", max_tokens: int = 16000, provider: str | None = None) -> Any:
     """스키마에 맞는 JSON(dict/list)을 돌려줍니다. 목록 스키마([...])도 됩니다."""
     js = to_json_schema(schema)
     wrapped = js.get("type") != "object"
     if wrapped:  # 최상위는 객체여야 하므로 감쌌다가 풉니다
         js = {"type": "object", "properties": {"result": js}, "required": ["result"], "additionalProperties": False}
-    data = parse_json(_run(prompt, text, files, system, js, effort, max_tokens))
+    data = parse_json(_run(prompt, text, files, system, js, effort, max_tokens, prov=provider))
     return data["result"] if wrapped else data
 
 

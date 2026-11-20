@@ -12,9 +12,13 @@ AI는 읽기·분류·추론·글쓰기를 맡고, 사실 판정은 코드가, �
 2. **결정자별 맞춤 콘텐츠** — 같은 현장 사진 1장으로 경영진용·영업 관리자용·전산 담당자용 카드뉴스와 블로그 원고를 만듭니다.
 3. **사실 검증과 승인** — 숫자·고객명·한정어·필수 키워드·미션을 코드가 검사해 점수와 [확인 필요]를 표시하고, 승인한 것만 내보냅니다.
 
-## 현재까지 확인된 결과 (실제 제공 자료 기준)
-- 자료 15개, 123쪽에서 사실 카드 281개 추출. 근거 구절은 코드가 원문과 대조해 모두 일치를 확인
+## 현재까지 확인된 결과 (실제 제공 자료, 실제 AI 호출)
+- 자료 15개, 123쪽에서 사실 카드 281개 추출. 근거 구절은 코드가 원문과 대조해 281개 모두 일치를 확인
 - 자료 간 충돌 8건 표시 (예: 학교 도입 수 200여 개와 150+, 녹취 성공률 99%의 "인터넷 전화" 조건 유무, 특허 수 2건과 3건)
+- 대표 설치 사례 사진 1장으로 3역할 카드뉴스 12장과 블로그 원고 3편 생성. 블로그 121문장 중 106문장에 사실 카드 근거, 13문장은 [AI 추론], 2문장은 [확인 필요]
+- 코드 검수 결과 3편 모두 100점, 가이드라인 미션 11개 통과
+- 주입 시험: 정상 원고에 일부러 넣은 오류 13가지(없는 수치, 조건 없는 99%, 충돌 수치, 화면 예시 값, 과장, 개인 연락처, 가리지 않은 고객명, 광고 표기 삭제 등)를 13가지 모두 검출
+- 사진 판독은 Claude로 했습니다. Gemini 교차 검증은 키가 없어 실행하지 않았고, 결과에 "미실행"으로 기록됩니다
 
 ## 실행
 ```
@@ -22,13 +26,27 @@ pip install -r requirements.txt
 copy .env.example .env        # ANTHROPIC_API_KEY 입력
 python collect.py             # 홈페이지 공개 자료와 설치 사례 사진 받기 → input/
 python build.py               # 자료 정리 → 사실 카드 → 충돌 → 마케팅 분석 → data/
+python make_content.py        # 사진 판독 → 3역할 카드뉴스·블로그 → 코드 검수 → 주입 시험 → data/content.json
 python -m streamlit run app.py
 ```
 대회에서 제공받은 원본 문서는 저장소에 포함하지 않았습니다. `input/docs/`에 넣고 `build.py`를 실행하면 됩니다.
 
 ## 구성
-- `ingest.py` 문서(PDF·PPT·엑셀)와 홈페이지 글을 파일·쪽 단위로 정리
+- `ingest.py` 문서(PDF·PPT·엑셀)와 홈페이지 글을 파일·쪽 단위로 정리. 지시문으로 보이는 쪽은 사실 카드에서 제외
 - `kit/analysis.py` 사실 카드 추출, 원문 대조, 충돌 탐지, 마케팅 분석
-- `kit/promo.py` 실제 사진 위에 문구를 배치하는 이미지 합성
+- `kit/content.py` 사진 판독, 결정자별 카드뉴스·블로그 생성, 실제 사진 위에 문구를 배치한 카드 이미지
+- `kit/verify.py` 코드 검수(AI를 쓰지 않아 같은 원고에 항상 같은 결과), 규칙 저장, 주입 시험
 - `kit/llm.py` AI 호출, 응답 저장, 비용 집계
-- `app.py` 웹 화면 (개편 중)
+- `data/` 분석 결과: `cards.json` 사실 카드, `conflicts.json` 충돌, `strategy.json` 마케팅 분석, `content.json` 생성 콘텐츠와 검수 결과
+- `app.py` 초기 화면 시안 (위 엔진과 아직 연결하지 않음)
+
+## 검수만 따로 쓰기
+```python
+import json
+from kit import verify
+cards = json.load(open("data/cards.json", encoding="utf-8"))
+conflicts = json.load(open("data/conflicts.json", encoding="utf-8"))
+ledger = verify.build_ledger(cards, conflicts, photos=[])      # photos: 가린 고객명 목록 (없으면 빈 목록)
+result = verify.check(제목, 본문, ledger)                        # {"점수", "상태": 통과|검토 필요|차단, "문제": [...], "미션": [...]}
+test = verify.injection_test(제목, 본문, ledger)                 # 일부러 틀리게 고친 원고를 몇 개 잡는지
+```
