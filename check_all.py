@@ -14,6 +14,7 @@ from kit import analysis, config, content, verify
 
 sys.stdout.reconfigure(encoding="utf-8")
 DOCS = [("블로그", "블로그"), ("도입 사례", "도입사례"), ("영업 이메일", "이메일")]
+BEFORE = 17      # 규칙을 보강하기 전(커밋 169fee2)의 독립 세트 검출 수
 
 
 def run() -> dict:
@@ -54,12 +55,20 @@ def run() -> dict:
                     print(f"  {role} · 카드뉴스 {n}장: [{i['종류']}·{i['상태']}] {i['설명']} | {i['문장'][:60]}")
     fp = verify.false_positive_test(cards, conflicts, ledger)
     vt = verify.variant_test(cards, conflicts, ledger)
-    print(f"\n합계: 문서 {total['문서']}편 (통과 {total['통과']} · 검토 필요 {total['검토 필요']} · 차단 {total['차단']}) · "
-          f"주입 {total['검출']}/{total['주입']} · 카드뉴스 {total['카드통과']}/{total['카드']}장 통과")
+    hold = verify.holdout_test(ledger) if hasattr(verify, "holdout_test") else None
+    print(f"\n합계: 문서 {total['문서']}편 (통과 {total['통과']} · 검토 필요 {total['검토 필요']} · 차단 {total['차단']}) · 카드뉴스 {total['카드통과']}/{total['카드']}장 통과")
     for kind, k in per_kind.items():
-        print(f"  {kind}: {k['문서']}편 중 통과 {k['통과']} · 주입 {k['검출']}/{k['주입']}")
-    print(f"오탐률 {fp['오탐률']}% (정상 문장 {fp['정상 문장']}개 중 {fp['잘못 걸림']}개) · 표현 변형 {vt['변형 문장']}문장 중 잘못 걸림 {vt['잘못 걸림']}건")
-    return {"합계": total, "종류별": per_kind, "오탐률": fp["오탐률"], "표현변형오탐": vt["잘못 걸림"]}
+        print(f"  {kind}: {k['문서']}편 중 통과 {k['통과']}")
+    print(f"정해 둔 오류 유형 회귀 시험 {total['검출']}/{total['주입']} (검수 규칙을 만든 쪽이 정한 오류 유형을 원고마다 넣은 것이라, 처음 보는 오류의 검출률이 아님)")
+    if hold and hold["오류"]:
+        print(f"독립 작성 오류 세트 {hold['검출']}/{hold['오류']} (이 세트를 보고 규칙을 고쳤으므로 처음 보는 오류의 검출률이 아님; 고치기 전 {BEFORE}/{hold['오류']}) · "
+              f"같은 세트의 정상 문장 {hold['정상']}개 중 잘못 잡음 {hold['오탐']}개")
+        for m in hold["놓침"]:
+            print(f"     놓침: {m['문장']} ({m['틀린 이유']})")
+    print(f"오탐률: 카드 문장 {fp['정상 문장']}개 중 {fp['잘못 걸림']}개 ({fp['오탐률']}%) · 그중 숫자가 든 문장 {fp.get('숫자 문장', '-')}개 기준 {fp.get('숫자 문장 오탐률', '-')}% "
+          f"(자료 간 충돌 카드와 화면 예시 카드는 제외)")
+    print(f"표현 변형 {vt['변형 문장']}문장 중 잘못 걸림 {vt['잘못 걸림']}건")
+    return {"합계": total, "종류별": per_kind, "오탐률": fp["오탐률"], "표현변형오탐": vt["잘못 걸림"], "독립세트": hold}
 
 
 if __name__ == "__main__":

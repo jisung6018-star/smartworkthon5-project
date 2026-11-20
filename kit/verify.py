@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
+from pathlib import Path
 
 from .config import ROOT
 
@@ -21,11 +22,42 @@ REQUIRED = ["통화요약", "콜센터 프로그램", "업무자동화"]
 TITLE_KEYS = ["티링크 비즈레코딩", "영업사원 통화관리", "휴대폰 통화녹음", "인터넷전화 자동녹취"]
 IMAGE_SLOTS = ["휴대폰 통화 화면", "인터넷전화 녹취 목록", "AI 통화요약", "직원별 통계", "종합 리포트 화면"]
 FOOTER_ITEMS = ["www.tlinkcrm.com", "blog.naver.com/mobilecrm", "1877-3836", "tlinkcrm.com/center.php"]
-EXAGGERATION = re.compile(r"업계\s*(최초|유일|1위|최고)|국내\s*(최초|유일|1위)|세계\s*최초|완벽(한|하게)|100\s*%\s*(보장|정확)|무조건")
+EXAGGERATION = re.compile(r"업계\s*(최초|유일|1위|최고|선두)|국내\s*(최초|유일|1위|최고)|세계\s*최초|완벽(한|하게)|100\s*%\s*(보장|정확|녹취|녹음)|무조건|"
+                          r"최고의|가장\s*뛰어난|1\s*위|1\s*등|유일(한|의|하게|무이)|독보적|압도적|No\.?\s*1|넘버\s*원|평생\s*무료", re.I)
+IF_CLAUSE = re.compile(r"다면|라면|더라도|(줄었|늘었|늘어났|줄어들었|높아졌|빨라졌)(으면|는지|거나|을\s*때|던)")       # '늘었다면'은 독자의 상황을 가정한 말
+REG_CLAIM = re.compile(r"의료법|개인정보\s*보호법|법규|법령|법적\s*(요건|기준)|컴플라이언스|HIPAA|ISMS|ISO\s?\d{4,5}|규정(을|를)?\s*(모두\s*)?(준수|충족|만족)", re.I)   # 어느 시장에서도 자료에 없는 주장
+COUNT_ITEMS = {"학교 도입 수", "특허 수", "통역 지원 언어 수"}      # 항목이 없는 숫자에 대해서도 '다른 항목' 판정을 하는 항목 (개수를 세는 항목)
+MAGNITUDE = re.compile(r"(절반|두\s*배|세\s*배|몇\s*배|수\s*배|눈에\s*띄게|획기적으로|대폭|크게)[^.\n]{0,14}(줄|빨라|늘|높아|절감|단축|향상|개선)")   # 크기를 말하는 효과 주장
+VAGUE_COUNT = re.compile(r"수\s?(십|백|천|만)\s*(여\s*)?(개|곳|건|명|석)")                                                         # '수백 곳' 같은 어림수
+ALIASES = {"아이폰": ["아이폰", "iPhone", "아이 폰", "iOS"]}                                                                       # 같은 대상을 가리키는 다른 표기
 PERSONAL = re.compile(r"01[016789][-.\s]?\d{3,4}[-.\s]?\d{4}|[\w.+-]+@(?!tlinkcrm\.com)[\w-]+\.[a-z]{2,}", re.I)
 EXPERIENCE_FAKE = re.compile(r"(직접|실제로)\s*(써|사용해|녹음해|통화해)\s*(보니|봤더니|보았더니|본 결과)|제가\s*(써|사용해)\s*본")
 QUAL_WORDS = {"녹취 성공률": ["인터넷 전화", "인터넷전화"], "통역 지원 언어 수": ["부가서비스", "신청", "설정에 따라"]}
-KEY_CONTEXT = {"학교 도입 수": ["학교", "초·중·고", "초.중.고", "초중고"], "특허 수": ["특허"], "도입 기업 수": ["기업", "곳"]}
+KEY_CONTEXT = {"학교 도입 수": ["학교", "초·중·고", "초.중.고", "초중고", "교육"], "특허 수": ["특허"], "도입 기업 수": ["기업", "곳"],
+               "최대 구축 규모": ["석", "규모", "구축"], "월 이용료": ["월", "이용료", "요금"], "설정비": ["설정비", "구축 비용", "구축비"],
+               "녹취 성공률": ["성공률", "녹취"], "통역 지원 언어 수": ["언어", "통역", "번역"]}
+STRICT_UNITS = {"%", "원", "곳", "석", "건", "명", "배", "개국", "USER"}
+STRONG_ITEMS = {"학교 도입 수", "특허 수", "설정비", "녹취 성공률", "통역 지원 언어 수"}   # 문맥 말이 분명해서 '다른 항목의 수치' 판정에 쓰는 항목      # 이 단위가 붙은 숫자는 자료에 같은 단위로 있어야 함
+
+
+def _uclass(unit: str) -> str:
+    """단위를 같은 뜻끼리 묶습니다 (만원·억원 → 원, 개·곳 → 곳, 퍼센트 → %)."""
+    u = (unit or "").replace(" ", "")
+    if u in ("%", "퍼센트"):
+        return "%"
+    if u in ("원", "만원", "억원", "만", "억"):
+        return "원"
+    if u in ("개", "곳", "개사"):
+        return "곳"
+    if u in ("USER", "유저"):
+        return "USER"
+    if u in ("시간", "분", "초"):
+        return "시간"
+    return u
+
+
+def _scaled(num: float, unit: str) -> float:
+    return round(num * 1e4, 2) if unit.startswith("만") else round(num * 1e8, 2) if unit.startswith("억") else num
 STRIP = re.compile(r"https?://\S+|www\.\S+|1877-3836|AES\s?256|SHA\s?256|\b070\b|\[이미지:[^\]]*\]|\[직접 사용 후 작성[^\]]*\]|#\S+")
 NUMBER = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(%|퍼센트|석|개국|개사|개|곳|건|명|만\s?원|억\s?원|만|억|원|배|시간|분|초|USER|유저)?")
 MONEY_UNITS = ("%", "퍼센트", "배", "만원", "억원", "만", "억", "원")
@@ -78,14 +110,77 @@ def _n(s) -> str:
 THOUSAND = re.compile(r"(\d+)\s*천\s*(여\s*)?(?=석|개|곳|명|원|건)")
 
 
+KOR_DIGIT = {"일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7, "팔": 8, "구": 9}
+KOR_UNIT = {"십": 10, "백": 100, "천": 1000}
+KOR_NUM = re.compile(r"(?<![가-힣\d])(?<!\d\s)([일이삼사오육칠팔구십백천만]*[십백천만][일이삼사오육칠팔구십백천만]*)\s*(여\s*)?(?=\s*(석|개|곳|건|명|퍼센트|%|원))")
+
+
+def _kor_value(word: str) -> int | None:
+    total = section = 0
+    digit = 0
+    for ch in word:
+        if ch in KOR_DIGIT:
+            digit = KOR_DIGIT[ch]
+        elif ch in KOR_UNIT:
+            section += (digit or 1) * KOR_UNIT[ch]
+            digit = 0
+        elif ch == "만":
+            total += (section + digit or 1) * 10000
+            section = digit = 0
+        else:
+            return None
+    return total + section + digit
+
+
 def _thousand(text: str) -> str:
-    """'3천 석', '1천여 곳'을 숫자 표기(3000석, 1000여 곳)로 바꿔 같은 값으로 비교합니다."""
-    return THOUSAND.sub(lambda m: str(int(m.group(1)) * 1000) + (m.group(2) or ""), text)
+    """'3천 석', '1천여 곳', '오천 석', '이백여 개'를 숫자 표기로 바꿔 같은 값으로 비교합니다."""
+    text = THOUSAND.sub(lambda m: str(int(m.group(1)) * 1000) + (m.group(2) or ""), text)
+
+    def kor(m):
+        v = _kor_value(m.group(1))
+        return m.group(0) if not v else str(v) + (m.group(2) or "")
+    return KOR_NUM.sub(kor, text)
 
 
 # ───────────────────────── 기준 만들기 ─────────────────────────
-def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -> dict:
+CONFIRMED_FILE = ROOT / "data" / "confirmed.json"
+
+
+def load_confirmed() -> dict:
+    """담당자가 확정한 값 {충돌 항목: 채택 숫자}. 파일이 없으면 빈 dict."""
+    try:
+        raw = json.loads(CONFIRMED_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for k, v in (raw or {}).items():
+        val = v.get("값") if isinstance(v, dict) else v
+        try:
+            out[k] = round(float(val), 2)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def apply_confirmed(conflicts: list[dict], confirmed: dict | None) -> list[dict]:
+    """확정한 값이 있는 충돌 항목에 '채택'을 붙이고, 처리 방법을 '확정한 값만 쓰고 [확인 필요]를 붙이지 않음'으로 바꿉니다."""
+    if not confirmed:
+        return conflicts
+    out = []
+    for x in conflicts:
+        if x.get("항목") in confirmed and x["종류"].startswith("값이 다름"):
+            v = confirmed[x["항목"]]
+            x = {**x, "채택": v, "처리": f"담당자가 확정한 값({v:g})만 쓰고 [확인 필요]를 붙이지 않음. 다른 값은 쓰지 않음"}
+        out.append(x)
+    return out
+
+
+def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict], confirmed: dict | None = None) -> dict:
+    conflicts = apply_confirmed(conflicts, confirmed)
     allowed, examples, quals, quoted = {}, {}, {}, {}
+    classes: dict[float, set] = {}       # 숫자 → 자료에서 함께 쓰인 단위 묶음
+    items: dict[float, set] = {}         # 숫자 → 그 숫자가 속한 항목 (기타 제외)
+    item_classes: dict[str, set] = {}    # 항목 → 그 항목의 값에 쓰인 단위 묶음
     for c in cards:
         if not c.get("원문확인"):
             continue
@@ -94,6 +189,22 @@ def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -
                 continue
             num = round(float(v["숫자"]), 2)
             (examples if c.get("유형") == "화면 예시 값" else allowed).setdefault(num, []).append(c["id"])
+            if c.get("유형") == "화면 예시 값":
+                continue
+            found = set()
+            for src in (str(v.get("값") or ""), c.get("내용") or "", c.get("원문") or ""):
+                for m in NUMBER.finditer(_thousand(src)):
+                    try:
+                        raw = round(float(m.group(1).replace(",", "")), 2)
+                    except ValueError:
+                        continue
+                    unit = (m.group(2) or "").replace(" ", "")
+                    if raw == num or _scaled(raw, unit) == num:
+                        found.add(_uclass(unit))
+            classes.setdefault(num, set()).update((found - {""}) or {""})
+            if v.get("항목") and v["항목"] != "기타":
+                items.setdefault(num, set()).add(v["항목"])
+                item_classes.setdefault(v["항목"], set()).update((found - {""}) or {""})
         # 원문 구절(코드가 원문과 대조해 확인한 글자)에 적힌 숫자도 자료에 있는 숫자로 인정
         if c.get("유형") == "화면 예시 값":
             continue
@@ -111,6 +222,7 @@ def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -
             for n in set(nums):
                 quals[n] = {"항목": x["항목"], "단어": words}
     confirm = []      # 자료마다 값이 달라서 [확인 필요] 없이 쓰면 안 되는 것
+    adopted = []      # 담당자가 값을 확정한 항목 → 그 값만 쓰고, 버린 값은 차단
     for x in conflicts:
         if not x["종류"].startswith("값이 다름"):
             continue
@@ -121,7 +233,10 @@ def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -
             continue
         top = max(n for n, _ in entries)
         total_vs_subset = any(n == top and not q for n, q in entries) and all(q for n, q in entries if n != top)
-        if x["종류"] == "값이 다름" or not total_vs_subset:     # '전체 수치 대 일부 범위 수치'는 충돌로 보지 않음
+        if x.get("채택") is not None:
+            keep = round(float(x["채택"]), 2)
+            adopted.append({"항목": x["항목"], "값": keep, "버림": sorted({n for n, _ in entries} - {keep}), "문맥": KEY_CONTEXT.get(x["항목"], [])})
+        elif x["종류"] == "값이 다름" or not total_vs_subset:     # '전체 수치 대 일부 범위 수치'는 충돌로 보지 않음
             confirm.append({"항목": x["항목"], "숫자": sorted({n for n, _ in entries}), "문맥": KEY_CONTEXT.get(x["항목"], [])})
     masked = sorted({p["가린고객명"] for p in photos if p.get("가린고객명")})
     limits = []       # 자료에 '○○은 사용할 수 없다'고 적힌 대상 → 되는 것처럼 쓰면 차단
@@ -132,7 +247,8 @@ def build_ledger(cards: list[dict], conflicts: list[dict], photos: list[dict]) -
     # 자료에 실제로 나오는 말 (자료에 공개된 구축 사례 이름은 써도 되고, 자료에 없는 이름은 고객명 후보로 봄)
     corpus = _n(" ".join(f"{c.get('내용', '')} {c.get('원문', '')}" for c in cards if c.get("원문확인"))
                 + " ".join(f"{p.get('업종', '')} {p.get('홈페이지설명', '')}" for p in photos) + COMMON_WORDS)
-    return {"허용숫자": allowed, "예시숫자": examples, "조건": quals, "확인필요": confirm, "가린고객명": masked, "자료어휘": corpus, "원문숫자": quoted, "제약": limits}
+    return {"허용숫자": allowed, "예시숫자": examples, "조건": quals, "확인필요": confirm, "가린고객명": masked, "자료어휘": corpus, "원문숫자": quoted, "제약": limits, "채택": adopted,
+            "단위": classes, "항목": items, "항목단위": item_classes}
 
 
 def load_rules() -> list[dict]:
@@ -233,37 +349,65 @@ def check(title: str, body: str, ledger: dict, rules: list[dict] | None = None, 
             add("광고 표기", "(하단)", "광고임을 밝히는 문구가 없음", 10)
     for s in _sentences(full):
         plain = _thousand(STRIP.sub(" ", s))
+        has_fact_number = False
         for m in NUMBER.finditer(plain):
             raw, unit = m.group(1), (m.group(2) or "").replace(" ", "")
             try:
                 num = round(float(raw.replace(",", "")), 2)
             except ValueError:
                 continue
-            if num < 13 and unit not in MONEY_UNITS:
-                continue                                   # '3가지', '5단계' 같은 순서·개수는 검사하지 않음
-            scaled = round(num * 1e4, 2) if unit.startswith("만") else round(num * 1e8, 2) if unit.startswith("억") else num
-            if scaled in ledger["허용숫자"]:                 # '30만원'은 사실 카드의 300,000 과 같은 값
-                num = scaled
-            in_quote = num not in ledger["예시숫자"] and unit in ledger.get("원문숫자", {}).get(num, ())   # 원문 구절에 같은 단위로 적힌 숫자
-            if num in ledger["허용숫자"] or in_quote:
+            uc = _uclass(unit)
+            if num < 13 and uc not in STRICT_UNITS:
+                continue                                   # '3가지', '5단계', '4장' 같은 순서·개수는 검사하지 않음
+            if num < 3 and uc not in ("%", "원", "배"):
+                continue                                   # '1곳', '2명' 같은 말은 검사하지 않음
+            if num in (float(date.today().year), float(date.today().year + 1)) and not unit:
+                continue                                   # 올해·내년 연도
+            if num == 24 and unit == "시간":
+                continue                                   # '24시간'은 관용 표현
+            num = _scaled(num, unit)                       # '30만원'은 300,000 으로 봄 (환산값이 없으면 원래 숫자로 되돌아가지 않음)
+            q_units = {_uclass(u) for u in ledger.get("원문숫자", {}).get(num, ())}
+            in_quote = num not in ledger["예시숫자"] and (uc in q_units)   # 원문 구절에 같은 단위로 적힌 숫자
+            known = set(ledger.get("단위", {}).get(num, ())) | q_units
+            mine = ledger.get("항목", {}).get(num, set())
+            ctx_ok = any(w in s for it in mine for w in KEY_CONTEXT.get(it, []))
+            if num in ledger["허용숫자"] and "단위" in ledger and uc in STRICT_UNITS and uc not in known and not ("" in known and (ctx_ok or not mine)):
+                add("근거 없는 수치", s, f"{raw}{unit}: 자료에는 이 숫자가 다른 단위({', '.join(sorted(k or '단위 없음' for k in known))})로만 나옴", 8)
+            elif num in ledger["허용숫자"] or in_quote:
+                usable = True
+                if not ctx_ok and uc in STRICT_UNITS:   # 이 숫자의 항목 말은 없는데, 같은 단위를 쓰는 다른 항목 이야기를 하고 있으면 → 다른 항목의 수치
+                    others = [it for it, words in KEY_CONTEXT.items() if it in (STRONG_ITEMS if mine else COUNT_ITEMS) and it not in mine and any(w in s for w in words if len(w) > 1)
+                              and uc in ledger.get("항목단위", {}).get(it, ())]
+                    if others or (mine and uc == "%" and all(KEY_CONTEXT.get(it) for it in mine)):
+                        add("다른 항목의 수치", s, f"{raw}{unit}는 자료에서 '{', '.join(sorted(mine)) or '다른 내용'}'의 값인데 '{', '.join(others) or '다른 내용'}'에 쓰임", 8)
+                        usable = False
+                has_fact_number = has_fact_number or usable
                 q = ledger["조건"].get(num)
                 if q and unit in ("%", "퍼센트", "개", "개국") and not any(_n(w) in _n(s) for w in q["단어"]):
                     add("조건 누락", s, f"{raw}{unit}에는 '{q['단어'][0]}' 조건을 함께 써야 함 ({q['항목']})", 8)
                 for c in ledger["확인필요"]:
-                    if num in c["숫자"] and any(w in s for w in c["문맥"]) and "[확인 필요" not in s:
+                    shown = {round(float(x.group(1).replace(",", "")), 2) for x in NUMBER.finditer(plain) if x.group(1).replace(",", "").replace(".", "").isdigit()}
+                    if num in c["숫자"] and any(w in s for w in c["문맥"]) and "[확인 필요" not in s and not set(c["숫자"]) <= shown:
                         add("충돌 수치", s, f"{c['항목']}은 자료마다 값이 다름 ({', '.join(f'{x:g}' for x in c['숫자'])}) → [확인 필요] 표시 필요", 8)
+                for a in ledger.get("채택", []):
+                    if num in a["버림"] and any(w in s for w in a["문맥"]):
+                        add("채택하지 않은 값", s, f"{a['항목']}은 담당자가 {a['값']:g}(으)로 확정함 → {num:g}은(는) 쓰지 않음", 8)
             elif num in ledger["예시숫자"]:
                 add("예시 값 사용", s, f"{raw}{unit}는 리포트 화면 예시에 나온 값이라 성능처럼 쓸 수 없음", 8)
             else:
-                add("근거 없는 수치", s, f"{raw}{unit}는 사실 카드에 없는 숫자", 8)
+                add("근거 없는 수치", s, f"{raw}{unit}는 사실 카드에 없는 숫자", 5 if uc == "시간" else 8)
         if EXAGGERATION.search(s):
             add("과장 표현", s, f"'{EXAGGERATION.search(s).group()}'", 6)
+        if VAGUE_COUNT.search(s):
+            add("근거 없는 수치", s, f"'{VAGUE_COUNT.search(s).group()}' 같은 어림수는 자료에 없음", 8)
+        if MAGNITUDE.search(s) and not has_fact_number:
+            add("성과 문구", s, f"효과의 크기를 말하는 문장에 자료 수치가 없음 ('{MAGNITUDE.search(s).group()}')", 8)
         if PERSONAL.search(s):
             add("개인 연락처", s, "대표번호·공식 메일이 아닌 연락처", 10)
         for lim in ledger.get("제약", []):
-            if lim["대상"] in s and CLAIM_YES.search(s) and not CLAIM_NO.search(s):
+            if any(a.lower() in s.lower() for a in ALIASES.get(lim["대상"], [lim["대상"]])) and CLAIM_YES.search(s) and not CLAIM_NO.search(s):
                 add("제약 위반", s, f"자료에는 '{lim['대상']}'은(는) 사용할 수 없다고 적혀 있음 ({lim['카드']} {lim['출처']})", 8)
-        if kind == "도입 사례" and OUTCOME.search(s):
+        if OUTCOME.search(s) and not IF_CLAUSE.search(s) and (kind == "도입 사례" or not has_fact_number):      # 다른 종류는 자료 수치가 함께 있으면 허용 (통화료 절감 사례 등)
             add("성과 문구", s, f"성과 문구: 도입 효과 자료가 없음 ('{OUTCOME.search(s).group()}')", 8)
         if market:        # 시장별 증거 규칙
             if (INTERPRET.search(s) and not INTERPRET_QUAL.search(s) and "특허" not in s and not s.startswith(NEW_MARKET_TAG)
@@ -273,6 +417,8 @@ def check(title: str, body: str, ledger: dict, rules: list[dict] | None = None, 
                 add("의료 규정", s, f"의료 규정 관련 주장은 자료에 없음 ('{MEDICAL_CLAIM.search(s).group()}')", 8)
             if market == "무역·물류" and TRADE_CLAIM.search(s) and not re.search(TRADE_NOT, s):   # '~사례는 아닙니다'는 주장이 아님
                 add("도입 사례 없음", s, "무역·물류 도입 사례 자료가 없음 (이 시장의 고객·사례·후기는 쓸 수 없음)", 8)
+        if REG_CLAIM.search(s) and not NOT_A_CLAIM.search(s) and not any(i["종류"] == "의료 규정" and i["문장"] == s[:90] for i in issues):
+            add("규정 주장", s, f"법규·규정 준수 주장은 자료에 없음 ('{REG_CLAIM.search(s).group()}')", 8)
         for r in rules or []:
             if r["금지"] and r["금지"] in s:
                 add("금지 표현", s, f"담당자가 금지한 '{r['금지']}'" + (f" → '{r['대체']}'" if r.get("대체") else ""), 5)
@@ -381,9 +527,11 @@ def _numbers(text: str) -> list[tuple[float, str, str]]:
             num = round(float(m.group(1).replace(",", "")), 2)
         except ValueError:
             continue
-        if num < 13 and unit not in MONEY_UNITS:
+        if num < 13 and _uclass(unit) not in STRICT_UNITS:
             continue
-        out.append((round(num * 1e4, 2) if unit.startswith("만") else round(num * 1e8, 2) if unit.startswith("억") else num, unit, m.group(0).strip()))
+        if num < 3 and _uclass(unit) not in ("%", "원", "배"):
+            continue
+        out.append((_scaled(num, unit), unit, m.group(0).strip()))
     return out
 
 
@@ -434,8 +582,9 @@ def variant_test(cards: list[dict], conflicts: list[dict], ledger: dict) -> dict
                 forms.append(f"{n // 1000}천 {unit}")
             for f in forms:
                 total += 1
-                r = check("", f"구축 사례는 {f}입니다.", ledger, None, doc_level=False)
-                bad = [i for i in r["문제"] if i["종류"] in ("근거 없는 수치", "예시 값 사용")]
+                lead = (KEY_CONTEXT.get(v.get("항목"), ["구축 사례"]) or ["구축 사례"])[-1 if v.get("항목") == "최대 구축 규모" else 0]
+                r = check("", f"{lead}는 {f}입니다.", ledger, None, doc_level=False)
+                bad = [i for i in r["문제"] if i["종류"] in ("근거 없는 수치", "예시 값 사용", "다른 항목의 수치")]
                 if bad:
                     rows.append({"카드": c["id"], "자료 표기": v.get("값"), "바꿔 쓴 표현": f, "잘못 걸린 이유": bad[0]["설명"]})
     return {"수치": len(seen), "변형 문장": total, "잘못 걸림": len(rows), "표": rows}
@@ -477,7 +626,32 @@ def false_positive_test(cards: list[dict], conflicts: list[dict], ledger: dict) 
         if r["문제"]:
             rows.append({"카드": c["id"], "출처": c["출처"], "문장": c["내용"][:80], "잘못 걸린 이유": " / ".join(f"{i['종류']}: {i['설명']}" for i in r["문제"])[:160]})
     n = len(pool) or 1
-    return {"정상 문장": len(pool), "잘못 걸림": len(rows), "오탐률": round(100 * len(rows) / n, 1), "표": rows}
+    with_num = sum(1 for c in pool if _numbers(c["내용"]))
+    return {"정상 문장": len(pool), "잘못 걸림": len(rows), "오탐률": round(100 * len(rows) / n, 1), "표": rows,
+            "숫자 문장": with_num, "숫자 문장 오탐률": round(100 * len(rows) / (with_num or 1), 1)}
+
+
+def holdout_test(ledger: dict, path=None) -> dict:
+    """독립 작성 오류 세트: 검수 규칙을 만든 사람이 아닌 심사 역할이 따로 쓴 문장으로 잽니다.
+    각 항목 {"문장","틀린 이유","작성","정상","종류"?,"시장"?}. 정상=True 인 문장은 걸리면 오탐입니다."""
+    path = path or (ROOT / "tests" / "holdout.json")
+    try:
+        items = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"오류": 0, "검출": 0, "정상": 0, "오탐": 0, "놓침": [], "오탐목록": []}
+    miss, fps, bad, ok = [], [], 0, 0
+    for it in items:
+        r = check("", it["문장"], ledger, None, doc_level=False, kind=it.get("종류") or "블로그", market=it.get("시장"))
+        caught = bool(r["문제"])
+        if it.get("정상"):
+            ok += 1
+            if caught:
+                fps.append({"문장": it["문장"], "잡은 이유": r["문제"][0]["설명"]})
+        else:
+            bad += 1
+            if not caught:
+                miss.append({"문장": it["문장"], "틀린 이유": it.get("틀린 이유", ""), "작성": it.get("작성", "")})
+    return {"오류": bad, "검출": bad - len(miss), "정상": ok, "오탐": len(fps), "놓침": miss, "오탐목록": fps}
 
 
 # ───────────────────────── 주입 시험 ─────────────────────────
