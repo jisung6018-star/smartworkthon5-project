@@ -1,0 +1,17 @@
+anthropic>=2.9
+google-genai>=3.4
+pandas
+openpyxl
+pdfplumber
+pypdfium2
+python-docx
+markdown
+pillow
+olefile
+streamlit
+requests
+beautifulsoup4
+python-dotenv
+pywin32; sys_platform == "win32"
+pymupdf
+python-pptx
